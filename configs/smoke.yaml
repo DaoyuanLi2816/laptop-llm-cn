@@ -1,0 +1,66 @@
+# 约几十秒到数分钟的端到端正确性检查，不追求聊天质量。
+name: smoke
+seed: 42
+output_dir: artifacts/smoke
+tokenizer_path: artifacts/smoke/tokenizer.json
+tokenizer_vocab_size: 512
+tokenizer_min_frequency: 1
+tokenizer_corpus:
+  - data/demo/pretrain_train.txt
+  - data/demo/pretrain_eval.txt
+
+data:
+  pretrain_train: data/demo/pretrain_train.txt
+  pretrain_eval: data/demo/pretrain_eval.txt
+  sft_train: data/demo/sft_train.jsonl
+  sft_eval: data/demo/sft_eval.jsonl
+  dpo_train: data/demo/dpo_train.jsonl
+  dpo_eval: data/demo/dpo_eval.jsonl
+
+model:
+  dim: 64
+  n_layers: 2
+  n_heads: 4
+  n_kv_heads: 2
+  max_seq_len: 64
+  dropout: 0.0
+  tie_embeddings: true
+
+stages:
+  pretrain:
+    batch_size: 2
+    gradient_accumulation_steps: 1
+    max_steps: 6
+    learning_rate: 0.001
+    min_learning_rate: 0.0001
+    warmup_steps: 1
+    log_interval: 1
+    eval_interval: 3
+    eval_batches: 2
+    save_interval: 100
+    dtype: float32
+  sft:
+    batch_size: 2
+    gradient_accumulation_steps: 1
+    max_steps: 6
+    learning_rate: 0.0005
+    min_learning_rate: 0.00005
+    warmup_steps: 1
+    log_interval: 1
+    eval_interval: 3
+    eval_batches: 2
+    save_interval: 100
+    dtype: float32
+  dpo:
+    batch_size: 2
+    gradient_accumulation_steps: 1
+    max_steps: 4
+    learning_rate: 0.0001
+    min_learning_rate: 0.00001
+    warmup_steps: 1
+    log_interval: 1
+    eval_interval: 2
+    eval_batches: 2
+    save_interval: 100
+    dtype: float32
+    dpo_beta: 0.1

@@ -1,0 +1,5 @@
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"一加二等于多少？"}],"expected_contains":["三"]}
+{"messages":[{"role":"system","content":"你是一个诚实的助手。"},{"role":"user","content":"你知道所有问题的答案吗？"}],"expected_contains":["不"]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"KV Cache 的作用是什么？"}],"expected_contains":["缓存"]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"训练损失变成 NaN 时应该怎么排查？"}],"expected_contains":["学习率"]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"请解释预训练和监督微调的区别。"}],"expected_contains":["预训练","监督微调"]}

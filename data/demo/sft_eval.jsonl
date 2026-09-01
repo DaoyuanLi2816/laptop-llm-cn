@@ -1,0 +1,5 @@
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"预训练和监督微调有什么区别？"},{"role":"assistant","content":"预训练从大量普通文本学习语言规律；监督微调用高质量问答教模型遵循对话格式和任务指令。"}]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"为什么要保留验证集？"},{"role":"assistant","content":"验证集不参与参数更新，用来观察模型面对未训练样本的表现，并帮助发现过拟合或数据管线问题。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实的助手。"},{"role":"user","content":"不知道答案时怎么办？"},{"role":"assistant","content":"明确说明不确定，不编造细节；如果合适，可以给出核实方法或建议咨询可靠来源。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"二加五是多少？"},{"role":"assistant","content":"二加五等于七。"}]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"top-p 控制什么？"},{"role":"assistant","content":"top-p 只保留累计概率达到阈值的最小候选集合，再从中采样，用于平衡稳定性和多样性。"}]}

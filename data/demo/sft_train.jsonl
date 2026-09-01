@@ -1,0 +1,20 @@
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"你好，请介绍一下自己。"},{"role":"assistant","content":"你好！我是一个在本地运行的小型语言模型助手。我可以陪你练习问答和解释基础概念，但知识与能力有限，不确定时会明确说明。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"什么是 token？"},{"role":"assistant","content":"token 是分词器处理文本时使用的基本单位。它可能是一个字、词的一部分、标点或字节片段；模型看到的是 token 编号，而不是原始文字。"}]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"为什么训练时要用因果遮罩？"},{"role":"assistant","content":"因为模型要预测下一个 token。如果当前位置能看到右侧未来内容，就等于提前偷看答案，训练指标会虚高，真实生成时却无法复现。"}]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"KV Cache 有什么用？"},{"role":"assistant","content":"它保存历史 token 在每层算出的 Key 和 Value。生成新 token 时只需计算新位置，再与缓存做注意力，不必重复计算整个前缀。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"一加二等于多少？"},{"role":"assistant","content":"一加二等于三。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"三乘四等于多少？"},{"role":"assistant","content":"三乘四等于十二。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"为什么天空看起来是蓝色？"},{"role":"assistant","content":"太阳光进入大气后，较短波长的蓝光更容易被空气分子散射到各个方向，所以白天从许多方向进入眼睛的散射光偏蓝。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"水为什么会结冰？"},{"role":"assistant","content":"温度降低时水分子的热运动减弱。在标准大气压下接近零摄氏度时，水分子形成较稳定的晶体结构，液态水转变为固态冰。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实的助手。"},{"role":"user","content":"告诉我明天一定会中奖的彩票号码。"},{"role":"assistant","content":"我无法预测中奖号码，也不存在能保证中奖的方法。彩票结果具有随机性，请量力而行。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实的助手。"},{"role":"user","content":"你刚刚已经替我发送邮件了吗？"},{"role":"assistant","content":"没有。我在这段对话里没有获得或执行发送邮件的工具，不能声称已经发送。"}]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"程序报错时应该先做什么？"},{"role":"assistant","content":"先保存完整报错和触发步骤，再构造最小复现，确认输入、环境与最近改动，然后逐层缩小问题范围。"}]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"训练损失突然变成 NaN 怎么排查？"},{"role":"assistant","content":"先降低学习率并检查数据是否含非法值，再查看梯度范数和混合精度设置；必要时切回 float32，用最小批次定位首次出现 NaN 的算子。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"请用三点解释好实验记录。"},{"role":"assistant","content":"第一，保存代码版本、配置和随机种子。第二，记录训练与验证指标以及失败样例。第三，让 checkpoint、日志和数据来源能够相互追溯。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"小模型有什么价值？"},{"role":"assistant","content":"小模型训练成本低，适合学习原理、验证新方法、离线部署和完成边界清楚的窄领域任务；但不应把它宣传成无所不知的通用助手。"}]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"混合精度为什么更快？"},{"role":"assistant","content":"它让适合的矩阵运算使用 float16 或 bfloat16，减少显存与带宽压力，并利用现代 GPU 的低精度计算单元；数值敏感操作仍保留较高精度。"}]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"梯度累积是什么意思？"},{"role":"assistant","content":"连续处理多个小批次并累加梯度，最后统一更新一次参数。这样显存只容纳小批次，却能模拟更大的有效 batch。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"我应该只看训练损失吗？"},{"role":"assistant","content":"不应该。还要看验证损失、任务指标、失败样例、生成质量、速度和资源占用；训练损失下降也可能只是过拟合。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"什么是 DPO？"},{"role":"assistant","content":"DPO 是直接偏好优化。它比较同一提示下的优选与拒绝回答，让模型相对参考模型更偏向优选回答，不需要在线训练奖励模型。"}]}
+{"messages":[{"role":"system","content":"你是一个耐心的编程老师。"},{"role":"user","content":"RMSNorm 和残差连接分别做什么？"},{"role":"assistant","content":"RMSNorm 稳定每层输入的数值尺度；残差连接保留原信息并提供更直接的梯度路径。二者配合让深层 Transformer 更容易训练。"}]}
+{"messages":[{"role":"system","content":"你是一个诚实、友好、简洁的中文助手。"},{"role":"user","content":"能给我一个学习建议吗？"},{"role":"assistant","content":"先用最小配置完整跑通并理解张量形状，再只改变一个因素做实验，记录结果与失败案例，最后再扩大模型和数据。"}]}

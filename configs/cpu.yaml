@@ -1,0 +1,66 @@
+# 纯 CPU 教学档：16k 词表以下约 7.7M 参数。建议先用 smoke 验证，再换真实语料。
+name: cpu
+seed: 42
+output_dir: artifacts/cpu
+tokenizer_path: artifacts/cpu/tokenizer.json
+tokenizer_vocab_size: 8000
+tokenizer_min_frequency: 2
+tokenizer_corpus:
+  - data/demo/pretrain_train.txt
+  - data/demo/pretrain_eval.txt
+
+data:
+  pretrain_train: data/demo/pretrain_train.txt
+  pretrain_eval: data/demo/pretrain_eval.txt
+  sft_train: data/demo/sft_train.jsonl
+  sft_eval: data/demo/sft_eval.jsonl
+  dpo_train: data/demo/dpo_train.jsonl
+  dpo_eval: data/demo/dpo_eval.jsonl
+
+model:
+  dim: 256
+  n_layers: 8
+  n_heads: 8
+  n_kv_heads: 2
+  max_seq_len: 512
+  dropout: 0.0
+
+stages:
+  pretrain:
+    batch_size: 2
+    gradient_accumulation_steps: 16
+    max_steps: 3000
+    learning_rate: 0.0006
+    min_learning_rate: 0.00006
+    warmup_steps: 100
+    log_interval: 10
+    eval_interval: 200
+    eval_batches: 20
+    save_interval: 500
+    dtype: float32
+    gradient_checkpointing: false
+  sft:
+    batch_size: 2
+    gradient_accumulation_steps: 8
+    max_steps: 600
+    learning_rate: 0.0001
+    min_learning_rate: 0.00001
+    warmup_steps: 30
+    log_interval: 10
+    eval_interval: 100
+    eval_batches: 20
+    save_interval: 300
+    dtype: float32
+  dpo:
+    batch_size: 1
+    gradient_accumulation_steps: 8
+    max_steps: 200
+    learning_rate: 0.00002
+    min_learning_rate: 0.000002
+    warmup_steps: 20
+    log_interval: 5
+    eval_interval: 50
+    eval_batches: 10
+    save_interval: 100
+    dtype: float32
+    dpo_beta: 0.1
