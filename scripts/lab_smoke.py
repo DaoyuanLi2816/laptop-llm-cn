@@ -12,12 +12,14 @@ import torch
 
 from laptop_llm.cli import build_parser
 from laptop_llm.config import ExperimentConfig, ModelConfig, StageConfig
+from laptop_llm.console import configure_console
 from laptop_llm.engine import run_stage
 from laptop_llm.posttraining.trainer import run_lab
 from laptop_llm.tokenizer import train_tokenizer
 
 
 def main():
+    configure_console()
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="artifacts/lab-smoke")
     parser.add_argument("--device", default="cpu")

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from laptop_llm.config import ExperimentConfig
+from laptop_llm.console import configure_console
 from laptop_llm.engine import load_inference_bundle, read_checkpoint, run_stage
 from laptop_llm.evaluation import run_generation_evaluation
 from laptop_llm.generation import GenerationConfig, TokenGenerator
@@ -74,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    configure_console()
     args = build_parser().parse_args(argv)
     if args.command == "lab":
         run_lab(args)

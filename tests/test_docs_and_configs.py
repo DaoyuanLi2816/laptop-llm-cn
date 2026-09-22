@@ -19,3 +19,17 @@ def test_all_shipped_configs_parse():
         config = ExperimentConfig.from_yaml(path)
         assert config.model.dim > 0
         assert all(Path(value).exists() for value in config.data.values())
+
+
+def test_cli_chinese_output_survives_western_windows_encoding():
+    import os
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "laptop_llm", "--help"],
+        env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+        capture_output=True,
+        check=True,
+    )
+    assert "中文" in result.stdout.decode("utf-8") or "笔记本" in result.stdout.decode("utf-8")
