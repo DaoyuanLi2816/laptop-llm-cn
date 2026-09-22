@@ -41,6 +41,7 @@ class TokenGenerator:
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.finish_reason = "stop"
 
     @torch.inference_mode()
     def generate_tokens(
@@ -56,6 +57,7 @@ class TokenGenerator:
             raise ValueError("prompt 已占满上下文，模型没有空间生成")
         available = self.model.config.max_seq_len - len(prompt_ids)
         max_new_tokens = min(config.max_new_tokens, available)
+        self.finish_reason = "length"
         stops = stop_ids or {self.tokenizer.end_id, self.tokenizer.eos_id}
         if config.seed is not None:
             torch.manual_seed(config.seed)
@@ -69,8 +71,12 @@ class TokenGenerator:
         history = list(prompt_ids)
 
         for generated_count in range(max_new_tokens):
-            next_id = sample_next_token(logits, history, config)
-            if next_id in stops and generated_count >= config.min_new_tokens:
+            step_logits = logits.clone()
+            if generated_count < config.min_new_tokens:
+                step_logits[:, list(stops)] = -torch.inf
+            next_id = sample_next_token(step_logits, history, config)
+            if next_id in stops:
+                self.finish_reason = "stop"
                 break
             history.append(next_id)
             yield next_id
@@ -87,9 +93,7 @@ class TokenGenerator:
         ids = list(self.generate_tokens(prompt_ids, config))
         return self.tokenizer.decode(ids), ids
 
-    def stream_text(
-        self, prompt_ids: Sequence[int], config: GenerationConfig
-    ) -> Iterator[str]:
+    def stream_text(self, prompt_ids: Sequence[int], config: GenerationConfig) -> Iterator[str]:
         """逐 token 解码为增量字符串；累计解码可正确处理 byte-level 中文 token。"""
 
         generated: list[int] = []
@@ -156,15 +160,11 @@ class ChatEngine:
         self.reset()
 
     def reset(self) -> None:
-        self.messages: list[dict[str, str]] = [
-            {"role": "system", "content": self.system_prompt}
-        ]
+        self.messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
 
-    def prompt_ids(
-        self, user_message: str, generation_config: GenerationConfig
-    ) -> list[int]:
+    def prompt_ids(self, user_message: str, generation_config: GenerationConfig) -> list[int]:
         candidate = [*self.messages, {"role": "user", "content": user_message}]
-        budget = self.generator.model.config.max_seq_len - generation_config.max_new_tokens
+        budget = self.generator.model.config.max_seq_len - 1
         return self.generator.tokenizer.build_chat_prompt(
             candidate, add_generation_prompt=True, max_length=max(8, budget)
         )
@@ -172,6 +172,8 @@ class ChatEngine:
     def reply(self, user_message: str, config: GenerationConfig) -> str:
         prompt = self.prompt_ids(user_message, config)
         text, _ = self.generator.generate_text(prompt, config)
+        if not text.strip():
+            return text
         self.messages.extend(
             [
                 {"role": "user", "content": user_message},

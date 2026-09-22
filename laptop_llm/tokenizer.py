@@ -125,19 +125,20 @@ class LLMTokenizer:
         if max_length is None or len(ids) <= max_length:
             return ids
 
-        # system 是行为边界，最新用户消息是任务本体；从中间最老的轮次开始丢。
+        # system 与最新消息不可静默丢弃，超长时要求调用方明确处理。
         system = segments[:1] if normalized and normalized[0]["role"] == "system" else []
         recent = segments[1:] if system else segments[:]
-        kept: list[list[int]] = []
+        kept: list[list[int]] = recent[-1:] if recent else []
         budget = max_length - 1 - len(suffix) - sum(map(len, system))
-        for segment in reversed(recent):
+        if sum(map(len, kept)) > budget:
+            raise ValueError("system 与最新消息超过上下文预算，请缩短消息或换用更长上下文模型")
+        for segment in reversed(recent[:-1]):
             if sum(map(len, kept)) + len(segment) > budget:
                 break
             kept.insert(0, segment)
+        while len(kept) > 1 and kept[0][0] == self.assistant_id:
+            kept.pop(0)
         ids = [self.bos_id, *(t for seg in [*system, *kept] for t in seg), *suffix]
-        if len(ids) > max_length:
-            # 即使 system 自己已经超预算，也保住 BOS 与序列最末端的用户任务/生成标记。
-            return [self.bos_id, *ids[-(max_length - 1) :]]
         return ids
 
     def build_sft_example(
@@ -166,15 +167,17 @@ class LLMTokenizer:
         prompt_messages: Sequence[dict[str, str]],
         response: str,
         max_length: int,
+        prompt_max_length: int | None = None,
     ) -> tuple[list[int], list[int]]:
         prompt_ids = self.build_chat_prompt(
-            prompt_messages, add_generation_prompt=True, max_length=max_length
+            prompt_messages,
+            add_generation_prompt=True,
+            max_length=prompt_max_length or max_length - 3,
         )
         response_ids = [*self.encode(response), self.end_id, self.eos_id]
-        # 回复优先保留；prompt 太长时从左边截，但保住一个 BOS 作为序列起点。
-        room = max(1, max_length - len(response_ids))
-        if len(prompt_ids) > room:
-            prompt_ids = [self.bos_id, *prompt_ids[-(room - 1) :]] if room > 1 else [self.bos_id]
+        # chosen/rejected 必须共享完全一致的 prompt，不能随回复长度改变。
+        if len(prompt_ids) >= max_length:
+            raise ValueError("偏好样本没有回答空间")
         input_ids = [*prompt_ids, *response_ids][:max_length]
         labels = [-100] * len(prompt_ids) + response_ids
         return input_ids, labels[: len(input_ids)]
@@ -227,5 +230,7 @@ def _validate_messages(messages: Sequence[dict[str, str]]) -> list[dict[str, str
             raise ValueError(f"messages[{index}].role 不支持: {role!r}")
         if not isinstance(content, str) or not content.strip():
             raise ValueError(f"messages[{index}].content 必须是非空字符串")
+        if any(token in content for token in SPECIAL_TOKENS):
+            raise ValueError("消息正文不能嵌入保留的角色控制 token")
         result.append({"role": role, "content": content.strip()})
     return result

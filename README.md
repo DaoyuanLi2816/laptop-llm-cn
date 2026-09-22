@@ -1,167 +1,166 @@
+<div align="center">
+
 # LaptopLLM-CN
 
-一台普通笔记本也能完整跑通的现代中文小型 LLM：从训练自己的 Byte-level BPE 分词器开始，依次完成预训练、监督微调（SFT）、直接偏好优化（DPO）、评测、KV Cache 聊天，以及 OpenAI 兼容的流式 Serving。
+### 把大模型，拆开学。
 
-它是 `tiny_LLM.py` 的工程化续篇：仍然坚持“代码就是教材、关键处用中文讲透”，但不再把所有内容塞进一个文件，而是把真实项目需要的数据格式、配置、断点、测试和服务边界补齐。
+**一台电脑 · 原生 PyTorch · 中文代码教材 · 从预训练到后训练，再到本地试聊**
 
-> [!IMPORTANT]
-> 仓库附带的 `data/demo` 只用于验证全链路，无法训练出通用智能。聊天能力主要由**有效数据量 × 模型容量 × 训练计算**决定。`smoke` 跑通代表实现正确，不代表模型聪明；要得到更丰富的聊天能力，请换入有许可的高质量中文预训练与对话数据。
+[![CI](https://github.com/DaoyuanLi2816/laptop-llm-cn/actions/workflows/ci.yml/badge.svg)](https://github.com/DaoyuanLi2816/laptop-llm-cn/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab)](pyproject.toml)
+[![License](https://img.shields.io/badge/License-MIT-19715b)](LICENSE)
 
-## 它包含什么
+[开始实验](#十分钟内先认识完整流程) · [中文课程](docs/course/README.md) · [技术地图](#不是名词清单每一项都有位置) · [源码对照](docs/references.md) · [验证记录](docs/validation.md)
 
-```text
-纯文本 → Byte-level BPE → 预训练 → SFT → DPO → 评测
-                                      ↓
-                         KV Cache 推理 → CLI / Web / OpenAI API
+</div>
+
+你知道 Transformer，却还没有真正写过一套 LLM 系统？
+
+这里不把 PPO 藏在一个 `trainer.train()` 里，也不把 MoE 当作配置文件里的缩写。
+我们从一个可以读完的 decoder 开始，把 **稀疏注意力、MLA、专家路由、rollout、奖励模型、PPO/GRPO、在线蒸馏、KV Cache** 拆成能运行、能手算、能测试的模块。最后用自己的 checkpoint 打开网页聊天。
+
+项目延续 `tiny_LLM.py` 的“代码即教材、中文讲透”风格；v0.2 从三阶段入门项目扩展为模型、后训练、系统三条学习路线。文档组织借鉴 [MiniMind](https://github.com/jingyaogong/minimind) 的低门槛实验入口，算法与系统对照公开的 DeepSeek、Qwen、verl、TRL、Megatron-LM 和 SGLang。不是它们的权重兼容实现。
+
+熟悉原文件的读者，可以先看[从 tiny_LLM.py 到新结构的迁移地图](docs/from-tiny.md)。
+
+> **定位要诚实。** 这是公开先进 LLM 技术的教学缩影，不是 OpenAI 内部仓库的复制品，也不保证读完即可胜任顶尖实验室的全部工作。工业系统的分布式通信、数据治理、容错、安全和性能工程会产生新的设计问题，绝不只是把参数放大。这里把这些差距也作为课程内容。
+
+## 先看全局，再看代码
+
+```mermaid
+flowchart LR
+    D[数据清洗 / 分词 / 切分] --> P[预训练]
+    P --> S[SFT / 可见 CoT]
+    S --> DP[DPO 偏好优化]
+    S --> RM[偏好数据训练 Reward Model]
+    RM --> PPO[PPO + Critic + GAE]
+    S --> G[GRPO + RLVR 验证器]
+    S --> O[学生 rollout + 教师分布 / OPD]
+    S --> L[LoRA 适配与合并]
+    DP --> E[评测 / 失败样例 / checkpoint]
+    PPO --> E
+    G --> E
+    O --> E
+    L --> E
+    E --> API[KV Cache / SSE API / 本地网页]
 ```
 
-| 模块 | 这个仓库的实现 | 为什么重要 |
-|---|---|---|
-| 分词 | NFKC + Byte-level BPE | 任意中英文、数字和符号都可编码，不再受手写词表限制 |
-| 模型 | RMSNorm、RoPE、GQA、SwiGLU、权重绑定 | 与现代 LLaMA 系 decoder-only 模型同族 |
-| Attention | PyTorch SDPA | 自动选择可用的 Flash / memory-efficient / math 后端 |
-| 训练 | AMP、梯度累积、裁剪、余弦调度、断点续训 | 在有限显存上稳定训练，并保留完整实验状态 |
-| 数据 | memmap packed tokens、assistant-only mask、偏好对 | 避免预训练 padding 浪费与 SFT 误监督用户文本 |
-| 对齐 | DPO + 冻结参考模型 | 让 chosen 相对 rejected 更可能 |
-| 推理 | prefill + 每层 KV Cache、top-k/top-p、重复惩罚 | 多轮聊天时只计算新 token |
-| 服务 | `/v1/chat/completions`、SSE、健康检查、网页 | 现有 OpenAI 客户端可直接连接 |
-| 质量 | 单元测试、端到端 smoke、GitHub Actions | 验证训练、cache 等价性、接口与包安装 |
+这些是**可选分支**，不是每个模型都必须依次经历的八道工序。GRPO 与 PPO 是不同优势估计路线；RLHF/RLVR 描述奖励来源；CoT 是数据与输出形式。先区分层次，才不会“技术越堆越先进”。
 
-## 5 分钟跑通
+## 十分钟内先认识完整流程
 
-Python 3.10–3.12 均可。若使用 NVIDIA GPU，建议先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)安装与你驱动匹配的 CUDA wheel，再安装本项目，避免 `pip` 意外换成 CPU 版 PyTorch。
+以下是操作路径，不是所有硬件的运行时间承诺。Python 3.10+；CPU 即可，不下载模型，不使用云服务。
 
-```powershell
+```bash
 git clone https://github.com/DaoyuanLi2816/laptop-llm-cn.git
 cd laptop-llm-cn
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -e ".[dev]"
-
-# 从 tokenizer 一直跑到 DPO；smoke 只验证全链路
-laptop-llm pipeline --config configs/smoke.yaml
-
-# 加载最终 checkpoint 聊天
-laptop-llm chat --checkpoint artifacts/smoke/dpo/final.pt
-
-# 固定贪心解码评测，逐条保存成功与失败
-laptop-llm evaluate --checkpoint artifacts/smoke/dpo/final.pt `
-  --suite data/demo/eval_suite.jsonl --output artifacts/smoke/evaluation.jsonl
 ```
 
-Linux/macOS 把激活命令换成 `source .venv/bin/activate` 即可。
+Windows PowerShell 激活：`.\.venv\Scripts\Activate.ps1`；Linux/macOS：`source .venv/bin/activate`。
 
-## 三档配置
+```bash
+python -m pip install -e ".[dev]"
+python -m pytest
 
-| 配置 | 典型模型 | 用途 | 说明 |
-|---|---:|---|---|
-| `configs/smoke.yaml` | 小于 1M | CI / 排错 | 每阶段几步，只验证所有接口 |
-| `configs/cpu.yaml` | 约 7.7M | 纯 CPU 学习 | 能训练，但完整实验需要耐心 |
-| `configs/laptop_16gb.yaml` | 约 42M | 12–16GB NVIDIA GPU | bf16 + 梯度检查点；真实语料通常要数小时到数天 |
+# 入门：BPE → pretrain → SFT → DPO，使用仓库中文样例
+laptop-llm pipeline --config configs/smoke.yaml --device cpu
 
-参数量会随实际 tokenizer 词表大小改变。先执行 `smoke`，再复制配置并一次只扩大一个维度。16GB 档默认仍引用演示数据，是为了开箱不报路径错误；正式训练前必须替换 `data.*` 与 `tokenizer_corpus`。
+# 进阶：自动生成原创算术数据，跑通全部八个阶段
+python scripts/lab_smoke.py --output artifacts/my-first-lab --device cpu
 
-## 分阶段运行
-
-```powershell
-# 1. 训练分词器
-laptop-llm train-tokenizer --config configs/cpu.yaml
-
-# 2. 预训练
-laptop-llm train pretrain --config configs/cpu.yaml --device cpu
-
-# 3. SFT：从预训练权重开始，但使用新的 optimizer
-laptop-llm train sft --config configs/cpu.yaml `
-  --init-from artifacts/cpu/pretrain/final.pt --device cpu
-
-# 4. DPO：冻结一份 SFT 模型作 reference
-laptop-llm train dpo --config configs/cpu.yaml `
-  --init-from artifacts/cpu/sft/final.pt --device cpu
-
-# 本阶段中断后，连同 optimizer 和 step 恢复
-laptop-llm train pretrain --config configs/cpu.yaml `
-  --resume artifacts/cpu/pretrain/step_0000500.pt
+# 本地网页：选择中文 smoke 权重，或换成你自己训练的权重
+laptop-llm serve --checkpoint artifacts/smoke/sft/final.pt --device cpu
 ```
 
-每个 checkpoint 内含模型配置、tokenizer、模型权重、优化器、阶段和步数，因此聊天与服务只需一个 `.pt` 文件。`torch.save` 使用 pickle 容器，**只加载你自己生成或明确可信来源的 checkpoint**。
+浏览器打开 **http://127.0.0.1:8000**；接口说明在 `/docs`。支持多轮历史、流式显示、温度/长度调节、清空对话、可选 API key。原始 `<think>` 文本可见，不伪装为内部思维。网页无 CDN、无前端构建和付费 API。
 
-## 本地 Serving
+**smoke 模型通常只输出随机文本。** 跑通说明工程链路成立，不说明模型聪明。算术实验也是有限任务，不是通用推理基准。请先读[验证记录与负结果](docs/validation.md)，再决定是否增加训练量。
 
-```powershell
-laptop-llm serve --checkpoint artifacts/smoke/dpo/final.pt `
-  --host 127.0.0.1 --port 8000
-```
+## 不是名词清单：每一项都有位置
 
-- 网页聊天：<http://127.0.0.1:8000>
-- 交互 API 文档：<http://127.0.0.1:8000/docs>
-- 健康检查：<http://127.0.0.1:8000/health>
+“运行”表示有执行路径和测试；“教学”表示未实现对应生产优化；“阅读”表示尚未实现，不能当成功能宣传。
 
-OpenAI Python 客户端可把 `base_url` 指向本机：
+| 模块 | 本仓库实现 | 入口与边界 |
+|---|---|---|
+| Decoder / RoPE / RMSNorm / SwiGLU / GQA / QK Norm | 运行 | [model.py](laptop_llm/model.py)，可切换 QK Norm |
+| Sparse Attention | 运行＋教学 | [sparse.py](laptop_llm/architectures/sparse.py)，真正 gather 滑窗＋sink；不是 DSA indexer 或 fused kernel |
+| Hybrid Attention | 运行 | `dense_every` 混合全局层与滑窗层；cache 保留全历史 |
+| MLA | 运行＋教学 | [mla.py](laptop_llm/architectures/mla.py)，latent KV cache＋权重吸收；非 DeepSeek checkpoint 布局 |
+| MoE | 运行＋教学 | [moe.py](laptop_llm/architectures/moe.py)，top-k、共享专家、dropless dispatch、balance/z loss |
+| Pretrain / SFT / DPO | 运行 | [engine.py](laptop_llm/engine.py)，AMP、累积、检查点、验证 |
+| CoT | 运行＋教学 | 原创算术 SFT 数据的 `<think>` / `<answer>`；步骤未被验证 |
+| RLHF / Reward Model | 运行＋教学 | 成对偏好训练 reward head；demo 标签为合成标签，不冒充真人反馈 |
+| PPO | 运行 | 固定 old/reference、独立 critic、GAE、policy/value clipping、EOS/截断区分 |
+| GRPO / RLVR | 运行 | 同题分组采样、组内标准化、规则奖励、KL、零方差组诊断 |
+| On-policy Distillation | 运行 | 学生实时采样，冻结教师，回答位置 full-vocabulary reverse KL |
+| LoRA | 运行 | 注入 q/v 低秩适配器、实际 SFT 更新、合并普通权重 |
+| KV Cache / Serving | 运行＋教学 | GQA 与 MLA cache；串行 FastAPI、聊天 completions 与 SSE 子集 |
+| DDP | 独立教学实验 | 两进程 CPU/gloo，验证梯度等于单进程全局 batch |
+| DSA / FP8 / MTP / TP / PP / EP / CP / FSDP / ZeRO | 阅读 | [工业系统章节](docs/course/08-systems.md)，不宣称已集成 |
+| Paged KV / continuous batching / speculative decoding / quantization | 阅读 | [服务章节](docs/course/09-serving.md)，不是高吞吐推理引擎 |
 
-```python
-from openai import OpenAI
+实现覆盖不是“所有顶级模型的统一标配”。例如 GQA 和 MLA 是替代设计，dense 与 MoE 各有取舍，RL 不保证胜过 SFT。
 
-client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="unused")
-response = client.chat.completions.create(
-    model="laptop-llm",
-    messages=[{"role": "user", "content": "请解释 KV Cache。"}],
-)
-print(response.choices[0].message.content)
-```
-
-如果不只监听 `127.0.0.1`，请通过 `--api-key` 或 `LAPTOP_LLM_API_KEY` 设置 Bearer token，并在真实网络环境加入 TLS、限流和反向代理。
-
-## 数据格式
-
-预训练文件是 UTF-8 纯文本，每个非空行视作一个文档；SFT 使用 `messages` JSONL；DPO 使用 `prompt/chosen/rejected` JSONL。完整约定、数据量建议与许可证检查见 [数据说明](docs/data.md)。
-
-```json
-{"messages":[{"role":"user","content":"什么是 RoPE？"},{"role":"assistant","content":"RoPE 用位置相关旋转把相对位置信息注入注意力。"}]}
-```
-
-```json
-{"prompt":[{"role":"user","content":"你会永远正确吗？"}],"chosen":"不会，我有能力边界。","rejected":"会，我永远正确。"}
-```
-
-## 仓库地图
+## 仓库就是课程目录
 
 ```text
 laptop_llm/
-  config.py       # dataclass + YAML 配置与约束
-  tokenizer.py    # BPE、对话模板、SFT/DPO loss mask
-  model.py        # RMSNorm / RoPE / GQA / SwiGLU / SDPA / KV Cache
-  data.py         # packed memmap、JSONL dataset、padding collator
-  engine.py       # 预训练 / SFT / DPO、AMP、调度、checkpoint
-  generation.py   # 采样、增量解码、多轮聊天
-  server.py       # FastAPI、SSE、OpenAI 兼容 API、内置网页
-  evaluation.py   # 固定提示、逐条结果、准确率、延迟与 tokens/s
-  cli.py          # train-tokenizer / train / pipeline / evaluate / chat / serve
-configs/          # smoke、CPU、16GB GPU 三档实验
-data/demo/        # 只用于验证链路的微型中文数据
-docs/             # 原理、数据、训练与部署教程
-tests/            # cache 等价性、mask、训练与 API 测试
+  tokenizer.py          # BPE、角色模板、监督与截断边界
+  data.py               # token cache、SFT、偏好对、padding
+  model.py              # 可读 decoder 主干与 KV Cache
+  architectures/        # sparse / MoE / MLA / LoRA 独立零件
+  engine.py             # 数据驱动的 pretrain / SFT / DPO
+  posttraining/
+    rollout.py          # token、动作 mask、终止与旧策略概率
+    rewards.py          # 规则 verifier 与 reward/value head
+    objectives.py       # PPO、GAE、GRPO、KL、蒸馏的纯函数
+    trainer.py          # 同步 rollout → 优化 → 指标 → checkpoint
+  generation.py         # prefill、decode、采样
+  server.py             # 本地网页＋HTTP/SSE
+configs/                # smoke / cpu / laptop_16gb / research_moe / research_mla
+scripts/                # 全流程 smoke、DDP 对照、数据导出
+docs/course/            # 从 tensor 到工业系统的中文课程
+tests/                  # 数值契约、训练更新、恢复、接口测试
 ```
 
-## 推荐阅读顺序
+建议先按[课程路线](docs/course/README.md)读，而不是从 CLI 一口气追完所有调用。
 
-1. [模型结构：从一行文字到 logits](docs/architecture.md)
-2. [数据与监督边界](docs/data.md)
-3. [训练流水线与显存预算](docs/training.md)
-4. [推理与服务](docs/serving.md)
+## 三档实验预算
 
-底层组件采用 Hugging Face Tokenizers 的可训练分词管线与 [BPE trainer](https://huggingface.co/docs/tokenizers/main/api/trainers)，Attention 使用 PyTorch 的 [`scaled_dot_product_attention`](https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html)，混合精度遵循 [`torch.amp`](https://docs.pytorch.org/docs/stable/amp.html) 的 autocast + GradScaler 模式。
+| 档位 | 用途 | 配置/入口 |
+|---|---|---|
+| CPU smoke | 检查代码、学习张量与目标函数 | `smoke.yaml`、`lab_smoke.py` 的约 0.139M MoE |
+| 笔记本练习 | 增加数据与步数，做控制变量实验 | `cpu.yaml`、`research_moe.yaml`、`research_mla.yaml` |
+| 本机 CUDA | 较大模型实验，仍需量测峰值显存 | `laptop_16gb.yaml`；不等于所有 16GB 机器都适用 |
 
-## 开发与验证
+PPO 同时有 policy、reference、reward、critic；后训练内存预算不能直接沿用单模型推理预算。无独显先用 smoke。Apple MPS 有自动设备路径，但本次没有实机验证，不把它列为已验证平台。
 
-```powershell
-ruff check .
-pytest
-python -m build
+### 单独运行后训练
+
+先跑 `lab_smoke.py` 生成小数据与权重，再把路径换成自己的实验：
+
+```bash
+laptop-llm lab grpo --checkpoint artifacts/my-first-lab/sft/final.pt --data artifacts/my-first-lab/rl_train.jsonl --output artifacts/grpo-experiment --steps 20 --group-size 4
+laptop-llm lab reward --checkpoint artifacts/my-first-lab/sft/final.pt --data artifacts/my-first-lab/dpo_train.jsonl --output artifacts/reward-experiment
+laptop-llm lab ppo --checkpoint artifacts/my-first-lab/sft/final.pt --reward-model artifacts/reward-experiment/final.pt --data artifacts/my-first-lab/rl_train.jsonl --output artifacts/ppo-experiment
+laptop-llm lab opd --checkpoint artifacts/my-first-lab/pretrain/final.pt --teacher artifacts/my-first-lab/sft/final.pt --data artifacts/my-first-lab/rl_train.jsonl --output artifacts/opd-experiment
+python scripts/ddp_lesson.py
 ```
 
-本项目的目标是让完整 LLM 生命周期变得可读、可改、可验证。它不是 vLLM、Transformers 或分布式训练框架的替代品，而是理解这些系统之前的一座足够正规的桥。
+`lab` 拒绝覆盖非空输出目录。每次保存 `run.json`、数据 SHA256、`metrics.jsonl`、原始 `rollouts.jsonl` 和 `final.pt`。当前 `lab` 不提供精确中断恢复；`train --resume` 恢复权重/optimizer/step，不保证重放同一随机轨迹。详见[实验工程](docs/course/08-systems.md)。
 
-## License
+## 学会什么，怎样证明学会
 
-[MIT](LICENSE)
+目标不是背下 30 个缩写，而是能完成[毕业实验](docs/course/10-research.md)：
+
+1. 从零画出一次 token 预测到一次策略更新的数据流，说明各张量形状与梯度归属。
+2. 给 sparse、MLA、MoE 找到 dense oracle 或可测不变量。
+3. 在固定数据与算力预算下做消融，报告置信范围和失败样例。
+4. 读懂公开工业源码里的对应模块，并指出单机教学版缺失的系统层。
+
+## 参与与致谢
+
+欢迎增加**带数值测试、中文推导和边界说明**的课程实现。新算法请先给出可区分于现有目标的实验，而不是只添一个参数名。
+
+感谢 [MiniMind](https://github.com/jingyaogong/minimind)、[DeepSeek](https://github.com/deepseek-ai)、[Qwen](https://github.com/QwenLM/Qwen3)、[verl](https://github.com/verl-project/verl)、[TRL](https://github.com/huggingface/trl)、[Megatron-LM](https://github.com/NVIDIA/Megatron-LM)、[SGLang](https://github.com/sgl-project/sglang) 的公开工作。具体源码版本与阅读映射见[参考索引](docs/references.md)。本项目代码 MIT；第三方模型、数据与代码遵守其各自许可证，不因本仓库 MIT 自动改授权。

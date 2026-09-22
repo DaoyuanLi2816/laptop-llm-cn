@@ -48,7 +48,7 @@ def run_generation_evaluation(
             prompt_ids = tokenizer.build_chat_prompt(
                 messages,
                 add_generation_prompt=True,
-                max_length=max(8, model.config.max_seq_len - config.max_new_tokens),
+                max_length=model.config.max_seq_len - 1,
             )
             if resolved_device.type == "cuda":
                 import torch

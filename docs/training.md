@@ -1,5 +1,8 @@
 # 训练：从 smoke 到笔记本实验
 
+这是入门三阶段说明。v0.2 的完整后训练路线请读[中文课程](course/README.md)，
+特别是 [PPO/GRPO](course/06-reinforcement.md) 与[在线蒸馏](course/07-distillation.md)。
+
 ## 三阶段分别学什么
 
 预训练优化所有文本的 next-token loss，建立语言与知识的基础表示。SFT 沿用预训练权重，用对话数据学习角色格式与回答行为。DPO 从 SFT 开始，同时冻结一份 reference，优化 chosen 相对 rejected 的概率差。
@@ -10,7 +13,7 @@ DPO logit = beta × [(logπ(chosen)-logπ(rejected))
 loss = -log sigmoid(DPO logit)
 ```
 
-reference 项限制策略不要仅靠整体放大所有回复概率来“作弊”。
+reference 提供相对概率基线；它不是保证模型不会偏移或作弊的硬约束。
 
 ## 有效 batch
 
@@ -37,6 +40,9 @@ effective batch = batch_size × gradient_accumulation_steps
 - `--resume`：恢复同一阶段的模型、optimizer 和 step；
 - 两者不能同时使用；
 - checkpoint 内嵌 tokenizer，推理时不会误用另一份词表。
+
+`--resume` 不保证 RNG、sampler、AMP scaler 的精确轨迹重放。DPO 恢复还必须有原始固定
+reference；旧格式缺失时会明确报错。`lab` 当前只支持新实验与阶段初始化，不提供精确恢复。
 
 保存采用“先写 `.tmp`、再原子替换”的方式，降低进程中断留下半个文件的概率。
 

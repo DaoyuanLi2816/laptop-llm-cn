@@ -11,6 +11,7 @@ from laptop_llm.config import ExperimentConfig
 from laptop_llm.engine import load_inference_bundle, read_checkpoint, run_stage
 from laptop_llm.evaluation import run_generation_evaluation
 from laptop_llm.generation import GenerationConfig, TokenGenerator
+from laptop_llm.posttraining.trainer import add_lab_parser, run_lab
 from laptop_llm.server import create_app
 from laptop_llm.tokenizer import train_tokenizer
 
@@ -68,11 +69,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     inspect_parser = subparsers.add_parser("inspect", help="查看 checkpoint 结构与训练来源")
     inspect_parser.add_argument("--checkpoint", required=True)
+    add_lab_parser(subparsers)
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    if args.command == "lab":
+        run_lab(args)
+        return
     if args.command == "train-tokenizer":
         config = ExperimentConfig.from_yaml(args.config)
         train_tokenizer_from_config(config, force=args.force)
@@ -136,8 +141,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
         final = run_stage("dpo", config, init_from=sft, device_name=args.device)
     print("\n" + "=" * 80)
     print(f"完整流水线结束。最终模型：{final}")
-    print(f"聊天：laptop-llm chat --checkpoint \"{final}\"")
-    print(f"服务：laptop-llm serve --checkpoint \"{final}\"")
+    print(f'聊天：laptop-llm chat --checkpoint "{final}"')
+    print(f'服务：laptop-llm serve --checkpoint "{final}"')
 
 
 def run_chat(args: argparse.Namespace) -> None:
@@ -169,7 +174,7 @@ def run_chat(args: argparse.Namespace) -> None:
             continue
 
         candidate = [*messages, {"role": "user", "content": user_text}]
-        budget = model.config.max_seq_len - generation_config.max_new_tokens
+        budget = model.config.max_seq_len - 1
         prompt_ids = tokenizer.build_chat_prompt(
             candidate, add_generation_prompt=True, max_length=max(8, budget)
         )
@@ -180,6 +185,8 @@ def run_chat(args: argparse.Namespace) -> None:
             pieces.append(piece)
         print()
         answer = "".join(pieces)
+        if not answer.strip():
+            continue
         messages.extend(
             [
                 {"role": "user", "content": user_text},

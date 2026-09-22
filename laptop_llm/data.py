@@ -125,17 +125,21 @@ class PreferenceDataset(Dataset[dict[str, dict[str, list[int]]]]):
             prompt = row.get("prompt")
             chosen = row.get("chosen")
             rejected = row.get("rejected")
-            if not isinstance(prompt, list) or not isinstance(chosen, str) or not isinstance(rejected, str):
+            if (
+                not isinstance(prompt, list)
+                or not isinstance(chosen, str)
+                or not isinstance(rejected, str)
+            ):
                 raise ValueError(
                     f"{path}:{line_number} 必须包含 prompt(list)、chosen(str)、rejected(str)"
                 )
             if chosen.strip() == rejected.strip():
                 raise ValueError(f"{path}:{line_number} chosen 与 rejected 不能相同")
             chosen_ids, chosen_labels = tokenizer.build_preference_example(
-                prompt, chosen, max_length
+                prompt, chosen, max_length, prompt_max_length=max_length - 3
             )
             rejected_ids, rejected_labels = tokenizer.build_preference_example(
-                prompt, rejected, max_length
+                prompt, rejected, max_length, prompt_max_length=max_length - 3
             )
             self.examples.append(
                 {
@@ -153,9 +157,7 @@ class PreferenceDataset(Dataset[dict[str, dict[str, list[int]]]]):
         return self.examples[index]
 
 
-def pad_lm_batch(
-    examples: Sequence[dict[str, list[int]]], pad_id: int
-) -> dict[str, torch.Tensor]:
+def pad_lm_batch(examples: Sequence[dict[str, list[int]]], pad_id: int) -> dict[str, torch.Tensor]:
     max_length = max(len(example["input_ids"]) for example in examples)
     batch_size = len(examples)
     input_ids = torch.full((batch_size, max_length), pad_id, dtype=torch.long)

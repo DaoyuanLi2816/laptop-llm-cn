@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+from laptop_llm.architectures.mla import LatentAttention
+from laptop_llm.architectures.moe import SparseMoE
+from laptop_llm.architectures.sparse import sparse_attention
 from laptop_llm.config import ModelConfig
 
 KVCache = tuple[torch.Tensor, torch.Tensor]
@@ -20,6 +23,8 @@ class ModelOutput:
     logits: torch.Tensor
     loss: torch.Tensor | None = None
     past_key_values: list[KVCache] | None = None
+    hidden_states: torch.Tensor | None = None
+    auxiliary_loss: torch.Tensor | None = None
 
 
 class RMSNorm(nn.Module):
@@ -57,9 +62,7 @@ def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.T
     x_even, x_odd = paired.unbind(dim=-1)
     cos = cos[None, None, :, :]
     sin = sin[None, None, :, :]
-    rotated = torch.stack(
-        (x_even * cos - x_odd * sin, x_even * sin + x_odd * cos), dim=-1
-    )
+    rotated = torch.stack((x_even * cos - x_odd * sin, x_even * sin + x_odd * cos), dim=-1)
     return rotated.flatten(-2).to(x.dtype)
 
 
@@ -76,6 +79,9 @@ class GroupedQueryAttention(nn.Module):
         self.n_kv_heads = config.n_kv_heads
         self.head_dim = config.dim // config.n_heads
         self.dropout = config.dropout
+        self.config = config
+        self.q_norm = RMSNorm(self.head_dim) if config.qk_norm else nn.Identity()
+        self.k_norm = RMSNorm(self.head_dim) if config.qk_norm else nn.Identity()
         self.q_proj = nn.Linear(config.dim, config.n_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(config.dim, config.n_kv_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(config.dim, config.n_kv_heads * self.head_dim, bias=False)
@@ -96,8 +102,8 @@ class GroupedQueryAttention(nn.Module):
         k = self.k_proj(x).view(batch, query_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(batch, query_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
-        q = apply_rope(q, cos, sin)
-        k = apply_rope(k, cos, sin)
+        q = apply_rope(self.q_norm(q), cos, sin)
+        k = apply_rope(self.k_norm(k), cos, sin)
 
         past_len = 0
         if past_key_value is not None:
@@ -115,6 +121,19 @@ class GroupedQueryAttention(nn.Module):
             v_for_attn = v.repeat_interleave(repeat, dim=1)
         else:
             k_for_attn, v_for_attn = k, v
+
+        if self.config.attention_pattern == "sliding":
+            y = sparse_attention(
+                q,
+                k_for_attn,
+                v_for_attn,
+                past_len=past_len,
+                window=self.config.sliding_window,
+                sinks=self.config.attention_sinks,
+                padding_mask=attention_mask,
+                dropout=self.dropout if self.training else 0.0,
+            )
+            return self.o_proj(y.transpose(1, 2).contiguous().view(batch, query_len, -1)), present
 
         key_len = k_for_attn.size(2)
         attn_mask: torch.Tensor | None = None
@@ -166,9 +185,13 @@ class TransformerBlock(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.attn_norm = RMSNorm(config.dim, config.norm_eps)
-        self.attn = GroupedQueryAttention(config)
+        self.attn = (
+            LatentAttention(config)
+            if config.attention_type == "mla"
+            else GroupedQueryAttention(config)
+        )
         self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
-        self.ffn = SwiGLU(config)
+        self.ffn = SparseMoE(config, SwiGLU) if config.num_experts else SwiGLU(config)
 
     def forward(
         self,
@@ -179,7 +202,7 @@ class TransformerBlock(nn.Module):
         attention_mask: torch.Tensor | None = None,
         past_key_value: KVCache | None = None,
         use_cache: bool = False,
-    ) -> tuple[torch.Tensor, KVCache | None]:
+    ) -> tuple[torch.Tensor, KVCache | None, torch.Tensor]:
         attn_out, present = self.attn(
             self.attn_norm(x),
             cos,
@@ -189,8 +212,14 @@ class TransformerBlock(nn.Module):
             use_cache=use_cache,
         )
         x = x + attn_out
-        x = x + self.ffn(self.ffn_norm(x))
-        return x, present
+        auxiliary = x.new_zeros(())
+        if isinstance(self.ffn, SparseMoE):
+            valid = None if attention_mask is None else attention_mask[:, -x.size(1) :]
+            update, auxiliary = self.ffn(self.ffn_norm(x), valid)
+        else:
+            update = self.ffn(self.ffn_norm(x))
+        x = x + update
+        return x, present, auxiliary
 
 
 class LaptopLLM(nn.Module):
@@ -207,7 +236,16 @@ class LaptopLLM(nn.Module):
         self.config = config
         self.token_embedding = nn.Embedding(config.vocab_size, config.dim)
         self.dropout = nn.Dropout(config.dropout)
-        self.layers = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
+        self.layers = nn.ModuleList(
+            [
+                TransformerBlock(
+                    replace(config, attention_pattern="dense")
+                    if config.dense_every and (index + 1) % config.dense_every == 0
+                    else config
+                )
+                for index in range(config.n_layers)
+            ]
+        )
         self.norm = RMSNorm(config.dim, config.norm_eps)
         self.lm_head = nn.Linear(config.dim, config.vocab_size, bias=False)
         if config.tie_embeddings:
@@ -223,7 +261,9 @@ class LaptopLLM(nn.Module):
         residual_std = 0.02 / math.sqrt(2 * config.n_layers)
         for block in self.layers:
             nn.init.normal_(block.attn.o_proj.weight, mean=0.0, std=residual_std)
-            nn.init.normal_(block.ffn.down_proj.weight, mean=0.0, std=residual_std)
+            for module in block.ffn.modules():
+                if isinstance(module, SwiGLU):
+                    nn.init.normal_(module.down_proj.weight, mean=0.0, std=residual_std)
 
     @staticmethod
     def _init_weights(module: nn.Module) -> None:
@@ -254,13 +294,15 @@ class LaptopLLM(nn.Module):
         if input_ids.ndim != 2:
             raise ValueError("input_ids 必须是 [batch, seq_len]")
         batch, seq_len = input_ids.shape
+        if seq_len == 0 or batch == 0:
+            raise ValueError("batch 和序列长度必须非空")
+        if past_key_values is not None and len(past_key_values) != len(self.layers):
+            raise ValueError("past_key_values 的层数与模型不一致")
         past_len = 0 if past_key_values is None else past_key_values[0][0].size(2)
         if past_len + seq_len > self.config.max_seq_len:
             raise ValueError(
                 f"序列总长 {past_len + seq_len} 超过 max_seq_len={self.config.max_seq_len}"
             )
-        if past_key_values is not None and len(past_key_values) != len(self.layers):
-            raise ValueError("past_key_values 的层数与模型不一致")
         if labels is not None and use_cache:
             raise ValueError("训练 loss 与 use_cache 不应同时开启")
 
@@ -268,6 +310,7 @@ class LaptopLLM(nn.Module):
         cos = self.rope_cos[past_len : past_len + seq_len]
         sin = self.rope_sin[past_len : past_len + seq_len]
         presents: list[KVCache] = []
+        auxiliary = x.new_zeros(())
 
         for layer_index, layer in enumerate(self.layers):
             past = None if past_key_values is None else past_key_values[layer_index]
@@ -277,16 +320,17 @@ class LaptopLLM(nn.Module):
 
                 def custom_forward(
                     hidden: torch.Tensor, _layer: TransformerBlock = layer
-                ) -> torch.Tensor:
+                ) -> tuple[torch.Tensor, torch.Tensor]:
                     # 用默认参数绑定当前层；否则 backward 重算时闭包会指向最后一层。
-                    return _layer(
+                    result = _layer(
                         hidden, cos, sin, attention_mask=attention_mask, use_cache=False
-                    )[0]
+                    )
+                    return result[0], result[2]
 
-                x = checkpoint(custom_forward, x, use_reentrant=False)
+                x, layer_auxiliary = checkpoint(custom_forward, x, use_reentrant=False)
                 present = None
             else:
-                x, present = layer(
+                x, present, layer_auxiliary = layer(
                     x,
                     cos,
                     sin,
@@ -294,10 +338,12 @@ class LaptopLLM(nn.Module):
                     past_key_value=past,
                     use_cache=use_cache,
                 )
+            auxiliary = auxiliary + layer_auxiliary / len(self.layers)
             if present is not None:
                 presents.append(present)
 
-        logits = self.lm_head(self.norm(x))
+        hidden_states = self.norm(x)
+        logits = self.lm_head(hidden_states)
         loss = None
         if labels is not None:
             if labels.shape != (batch, seq_len):
@@ -308,4 +354,10 @@ class LaptopLLM(nn.Module):
                 labels[:, 1:].contiguous().view(-1),
                 ignore_index=-100,
             )
-        return ModelOutput(logits=logits, loss=loss, past_key_values=presents or None)
+        return ModelOutput(
+            logits=logits,
+            loss=loss,
+            past_key_values=presents or None,
+            hidden_states=hidden_states,
+            auxiliary_loss=auxiliary,
+        )

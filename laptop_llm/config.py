@@ -28,8 +28,37 @@ class ModelConfig:
     norm_eps: float = 1e-5
     dropout: float = 0.0
     tie_embeddings: bool = True
+    # 独立开关便于做控制变量实验；不是把所有新技术堆叠就一定更好。
+    attention_pattern: str = "dense"
+    attention_type: str = "gqa"
+    kv_lora_rank: int = 32
+    sliding_window: int = 64
+    attention_sinks: int = 4
+    dense_every: int = 0
+    qk_norm: bool = False
+    num_experts: int = 0
+    experts_per_token: int = 2
+    shared_experts: int = 1
+    router_aux_coef: float = 0.01
+    router_z_coef: float = 0.001
 
     def __post_init__(self) -> None:
+        if min(self.dim, self.n_layers, self.n_heads, self.n_kv_heads) <= 0:
+            raise ValueError("模型维度、层数、头数必须为正")
+        if self.attention_pattern not in {"dense", "sliding"}:
+            raise ValueError("attention_pattern 必须为 dense/sliding")
+        if self.attention_type not in {"gqa", "mla"} or self.kv_lora_rank <= 0:
+            raise ValueError("attention_type 必须是 gqa/mla，latent rank 必须为正")
+        if self.attention_type == "mla" and (self.attention_pattern != "dense" or self.qk_norm):
+            raise ValueError("教学 MLA 暂不组合 sliding/qk_norm；请分开做对照实验")
+        if self.sliding_window <= 0 or self.attention_sinks < 0 or self.dense_every < 0:
+            raise ValueError("窗口必须为正，sink 和 dense_every 不能为负")
+        if self.num_experts < 0 or self.shared_experts < 0:
+            raise ValueError("专家数量不能为负")
+        if self.num_experts and not 1 <= self.experts_per_token <= self.num_experts:
+            raise ValueError("experts_per_token 必须处于 [1, num_experts]")
+        if not 0 <= self.dropout < 1 or min(self.router_aux_coef, self.router_z_coef) < 0:
+            raise ValueError("dropout 或 router loss 系数非法")
         if self.vocab_size < 0:
             raise ValueError("vocab_size 不能是负数")
         if self.dim % self.n_heads != 0:

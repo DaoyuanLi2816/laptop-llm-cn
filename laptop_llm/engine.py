@@ -125,6 +125,10 @@ def run_stage(
         if checkpoint_source is None:
             raise ValueError("DPO 必须通过 --init-from 从 SFT checkpoint 开始")
         reference_model = copy.deepcopy(model).eval()
+        if resume is not None:
+            if "reference_model" not in checkpoint_data:
+                raise ValueError("旧 DPO checkpoint 未保存固定 reference；不能伪装成等价续训")
+            reference_model.load_state_dict(checkpoint_data["reference_model"])
         for parameter in reference_model.parameters():
             parameter.requires_grad_(False)
 
@@ -191,7 +195,9 @@ def run_stage(
             accumulated_aux += float(aux) / stage_config.gradient_accumulation_steps
 
         scaler.unscale_(optimizer)
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), stage_config.max_grad_norm)
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(), stage_config.max_grad_norm, error_if_nonfinite=True
+        )
         scaler.step(optimizer)
         scaler.update()
 
@@ -247,6 +253,7 @@ def run_stage(
                 config,
                 stage,
                 step,
+                reference_model=reference_model,
             )
 
     final_path = stage_dir / "final.pt"
@@ -258,6 +265,7 @@ def run_stage(
         config,
         stage,
         stage_config.max_steps,
+        reference_model=reference_model,
     )
     print(f"完成：{final_path}")
     return final_path
@@ -305,7 +313,7 @@ def make_loader(
         shuffle=shuffle,
         num_workers=stage_config.num_workers,
         pin_memory=torch.cuda.is_available(),
-        drop_last=len(dataset) >= stage_config.batch_size,
+        drop_last=shuffle and len(dataset) >= stage_config.batch_size,
         collate_fn=collate_fn,
     )
 
@@ -317,13 +325,15 @@ def infinite_batches(loader: DataLoader[Any]) -> Iterator[Any]:
         yield from loader
 
 
-def language_model_batch_loss(model: torch.nn.Module, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+def language_model_batch_loss(
+    model: torch.nn.Module, batch: dict[str, torch.Tensor], *, include_auxiliary: bool = True
+) -> torch.Tensor:
     if "next_token_labels" in batch:
         output = model(batch["input_ids"])
         return F.cross_entropy(
             output.logits.reshape(-1, output.logits.size(-1)),
             batch["next_token_labels"].reshape(-1),
-        )
+        ) + (output.auxiliary_loss if include_auxiliary else 0)
     output = model(
         batch["input_ids"],
         labels=batch["labels"],
@@ -331,19 +341,20 @@ def language_model_batch_loss(model: torch.nn.Module, batch: dict[str, torch.Ten
     )
     if output.loss is None:
         raise RuntimeError("模型没有返回 loss")
-    return output.loss
+    return output.loss + (output.auxiliary_loss if include_auxiliary else 0)
 
 
 def sequence_log_probabilities(
-    model: torch.nn.Module, batch: dict[str, torch.Tensor]
-) -> torch.Tensor:
+    model: torch.nn.Module, batch: dict[str, torch.Tensor], *, return_auxiliary: bool = False
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     output = model(batch["input_ids"], attention_mask=batch.get("attention_mask"))
     logits = output.logits[:, :-1].float()
     labels = batch["labels"][:, 1:]
     mask = labels != -100
     safe_labels = labels.masked_fill(~mask, 0)
     token_logps = F.log_softmax(logits, dim=-1).gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1)
-    return (token_logps * mask).sum(dim=-1)
+    result = (token_logps * mask).sum(dim=-1)
+    return (result, output.auxiliary_loss) if return_auxiliary else result
 
 
 def dpo_batch_loss(
@@ -354,21 +365,22 @@ def dpo_batch_loss(
     beta: float,
     label_smoothing: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    policy_chosen = sequence_log_probabilities(policy, batch["chosen"])
-    policy_rejected = sequence_log_probabilities(policy, batch["rejected"])
+    policy_chosen, chosen_aux = sequence_log_probabilities(
+        policy, batch["chosen"], return_auxiliary=True
+    )
+    policy_rejected, rejected_aux = sequence_log_probabilities(
+        policy, batch["rejected"], return_auxiliary=True
+    )
     with torch.no_grad():
         reference_chosen = sequence_log_probabilities(reference, batch["chosen"])
         reference_rejected = sequence_log_probabilities(reference, batch["rejected"])
 
-    logits = beta * (
-        (policy_chosen - policy_rejected) - (reference_chosen - reference_rejected)
-    )
+    logits = beta * ((policy_chosen - policy_rejected) - (reference_chosen - reference_rejected))
     losses = -(
-        (1 - label_smoothing) * F.logsigmoid(logits)
-        + label_smoothing * F.logsigmoid(-logits)
+        (1 - label_smoothing) * F.logsigmoid(logits) + label_smoothing * F.logsigmoid(-logits)
     )
     accuracy = (logits > 0).float().mean()
-    return losses.mean(), accuracy
+    return losses.mean() + (chosen_aux + rejected_aux) / 2, accuracy
 
 
 @torch.no_grad()
@@ -384,6 +396,7 @@ def evaluate(
     model.eval()
     losses: list[float] = []
     accuracies: list[float] = []
+    weights: list[int] = []
     for batch_index, batch in enumerate(loader):
         if batch_index >= stage_config.eval_batches:
             break
@@ -399,13 +412,26 @@ def evaluate(
                     label_smoothing=stage_config.dpo_label_smoothing,
                 )
                 accuracies.append(float(accuracy))
+                weight = batch["chosen"]["input_ids"].size(0)
             else:
-                loss = language_model_batch_loss(model, batch)
+                loss = language_model_batch_loss(model, batch, include_auxiliary=False)
+                weight = (
+                    batch["next_token_labels"].numel()
+                    if "next_token_labels" in batch
+                    else int((batch["labels"][:, 1:] != -100).sum())
+                )
         losses.append(float(loss))
-    mean_loss = sum(losses) / max(1, len(losses))
+        weights.append(weight)
+    if not weights or sum(weights) == 0:
+        raise ValueError("评测集没有有效样本/token")
+    mean_loss = sum(loss * weight for loss, weight in zip(losses, weights, strict=True)) / sum(
+        weights
+    )
     result = {"eval_loss": mean_loss}
     if accuracies:
-        result["eval_preference_accuracy"] = sum(accuracies) / len(accuracies)
+        result["eval_preference_accuracy"] = sum(
+            acc * weight for acc, weight in zip(accuracies, weights, strict=True)
+        ) / sum(weights)
     else:
         result["perplexity"] = math.exp(min(mean_loss, 20.0))
     return result
@@ -433,9 +459,7 @@ def cosine_learning_rate(step: int, config: StageConfig) -> float:
         return config.learning_rate * step / max(1, config.warmup_steps)
     progress = (step - config.warmup_steps) / max(1, config.max_steps - config.warmup_steps)
     cosine = 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
-    return config.min_learning_rate + cosine * (
-        config.learning_rate - config.min_learning_rate
-    )
+    return config.min_learning_rate + cosine * (config.learning_rate - config.min_learning_rate)
 
 
 def autocast_context(device: torch.device, dtype: torch.dtype):
@@ -469,6 +493,8 @@ def save_checkpoint(
     experiment: ExperimentConfig,
     stage: str,
     step: int,
+    *,
+    reference_model: LaptopLLM | None = None,
 ) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -483,6 +509,11 @@ def save_checkpoint(
             "optimizer": optimizer.state_dict(),
             "tokenizer_json": tokenizer.to_str(),
             "experiment": experiment.to_dict(),
+            **(
+                {"reference_model": reference_model.state_dict()}
+                if reference_model is not None
+                else {}
+            ),
         },
         temporary,
     )
