@@ -26,8 +26,13 @@ class BlockIndexer(nn.Module):
         groups = self.config.n_kv_heads
         group_heads = heads // groups
         # 辅助 KL 不应把 backbone 训练成“讨好 indexer”。
-        index_q = self.index_q(x.detach()).view(batch, queries, groups, -1).transpose(1, 2)
-        index_keys = self.index_k(x.detach())
+        # 硬 Top-k 是不连续操作：重复 token 的理论同分可能被不同 GEMM 形状
+        # 的舍入误差打破。参考路径按 token 投影，使 prefill/decode 的 GEMM
+        # 形状都固定为 [B,D]；这不是高吞吐 kernel，应先保证路由语义可复现。
+        detached = x.detach()
+        index_q = torch.stack([self.index_q(detached[:, t]) for t in range(queries)], 1)
+        index_q = index_q.view(batch, queries, groups, -1).transpose(1, 2)
+        index_keys = torch.stack([self.index_k(detached[:, t]) for t in range(queries)], 1)
         if past is not None:
             index_keys = torch.cat((past.index_keys, index_keys), 1)
         total = k.size(2)
@@ -42,7 +47,8 @@ class BlockIndexer(nn.Module):
         for t in range(queries):
             position = past_len + t
             visible = valid_keys & (torch.arange(total, device=x.device)[None] <= position)
-            scores = torch.einsum("bgd,bsd->bgs", index_q[:, :, t].float(), index_keys.float())
+            # 固定最后一个维度的逐元素归约，避免前缀长度改变点积 GEMM 的算法。
+            scores = (index_q[:, :, t, None].float() * index_keys[:, None].float()).sum(-1)
             scores = scores / math.sqrt(self.config.index_dim)
             # 先遮未来 token，再 max-pool；整个未来块不可进入路由决策。
             masked = scores.masked_fill(~visible[:, None], -torch.inf)
@@ -52,7 +58,11 @@ class BlockIndexer(nn.Module):
             selection_scores = block_scores.clone()
             selection_scores[..., local] = torch.inf  # local 块占一个预算槽，不额外扩张预算。
             budget = blocks if self.warmup else min(self.config.index_topk, blocks)
-            selected = selection_scores.topk(budget, -1).indices
+            # 同分时选更早的块。Top-k 默认不承诺稳定的同分顺序，未来 masked
+            # 块的数量也不应该改变过去的路由。稳定排序是教学实现的显式约定。
+            selected = selection_scores.argsort(dim=-1, descending=True, stable=True)[
+                ..., :budget
+            ]
             indices = selected[..., None] * block_size + torch.arange(block_size, device=x.device)
             indices = indices.flatten(-2)
             in_bounds = indices < total

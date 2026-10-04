@@ -18,6 +18,18 @@ index scores → future/padding mask → block max → local block 强制占一�
 local block 在预算内，不是额外送一个。最早位置可用块不足预算时，越界槽位有显式 allowed mask。
 全 padding 行的 scores 先安全处理，再把权重归零，避免 softmax(-inf,…,-inf) 产生 NaN。
 
+### 硬路由放大数值误差：一次真实的 Windows CI 失败
+
+首轮 v0.3 CI 中，两个历史块含相同 token，理论索引分数相同。完整前向与分段
+解码使用不同形状的 GEMM，舍入差异约 `1e-9`；硬 Top-k 却选了不同块，后续
+logits 最大误差约 `0.0285`。**小数值误差不保证离散决策的小误差**。
+
+本地参考实现按 token 使用同样的 `[B,D]` 投影形状，并以固定特征维归约计算索引
+点积；稳定排序在同分时优先更早的块。未来 masked 块数不能改变过去的路由。
+这增加 Python 循环，不是生产优化。原缓存等价性容差不放宽，CI 额外覆盖
+`MKL_CBWR=COMPATIBLE`、重复 token、精确同分和不同 prefill 切分。
+真实大规模 kernel 仍需单独检查精度、路由一致性与吞吐，不能套用这份参考代码的结论。
+
 离散 indices 不能通过主 CE 给 index projection 普通梯度。本地辅助 KL 的教师为同组 Q 头**概率的均值**，不是平均 logits 后 softmax。
 教师 detach，index hidden 输入也 detach：这个辅助项只更新 index Q/K，不影响主干、主 Q/K/V。
 模型返回的 `auxiliary_loss` 包含索引、MoE，以及有 labels 时的 MTP；不能把总辅助项统一叫“router loss”。

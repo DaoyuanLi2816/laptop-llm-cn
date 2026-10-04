@@ -31,6 +31,12 @@ jobs:
         run: ruff check .
       - name: Test
         run: pytest
+      - name: Index routing with alternate CPU arithmetic
+        if: runner.os == 'Windows'
+        env:
+          ATEN_CPU_CAPABILITY: default
+          MKL_CBWR: COMPATIBLE
+        run: python -m pytest tests/test_frontier_architecture.py
       - name: Advanced end-to-end curriculum
         run: python scripts/lab_smoke.py --output artifacts/ci-lab --device cpu
       - name: Build distribution

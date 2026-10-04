@@ -7,8 +7,8 @@
 
 | 检查 | 观察 / 边界 |
 |---|---|
-| 本地测试 | 96 项通过，包含 6 项 CUDA；CPU CI 应为 90 项通过、6 项跳过。仅有现有 FastAPI/Starlette testclient 弃用提醒 |
-| Frontier CPU | 三种架构各 pretrain/SFT/DPO＋MOPD＋agent-GRPO，共 11 阶段，各 2 步；脚本耗时约 19.8s |
+| 本地测试 | 97 项通过，包含 6 项 CUDA；CPU CI 应为 91 项通过、6 项跳过。仅有现有 FastAPI/Starlette testclient 弃用提醒 |
+| Frontier CPU | 三种架构各 pretrain/SFT/DPO＋MOPD＋agent-GRPO，共 11 阶段，各 2 步；路由修复后复跑脚本耗时约 20.5s |
 | Frontier CUDA FP32 | 同流程约 61.0s；小矩阵/Python 循环下 GPU 更慢，**没有加速结论** |
 | 模型规模 | hybrid 354,512、indexed 286,496、mHC 295,820 参数；实际窗口 192，共享 tokenizer hash `68b9bcf99c14029e4d594683a892a23cd0b542e945c8596f3284cec61776a660` |
 | FP4 存储 | hybrid 模型唯一 storage：1,418,048 → 366,992 bytes（约 3.86×），不包含 optimizer，不是文件/峰值显存指标 |
@@ -22,6 +22,12 @@
 
 数值测试还覆盖：KDA 单步 oracle、cache 多 token 追加/不可变分支、AttnRes activation-checkpoint 梯度等价、mHC 行列归一化、索引 KL 梯度隔离、MTP 标签偏移与真实预训练梯度、Muon state 重载、双侧校正原分母/GAR/hack 筛除。
 后训练日志在 v0.3 将总辅助项改名 `auxiliary_loss`，并保留原始 `input_ids`、`action_mask`、`behavior_logp`、`terminal_mask`、版本与 agent 事件。
+
+首轮远程 v0.3 CI（`8605082`）的 Linux 任务通过，两个 Windows 任务暴露索引
+缓存路由不一致：同 token 分数约 `1e-9` 的 GEMM 舍入差异导致 Top-k 换块，
+最大 logits 差约 `0.0285`。本地 alternate CPU arithmetic 复现后，改为逐 token
+canonical 索引投影、固定维点积和稳定同分排序；保留原严格误差阈值，并增加
+回归与 Windows CI 后端检查。原失败记录保留，不将第一轮失败覆盖成成功。
 
 复查：
 

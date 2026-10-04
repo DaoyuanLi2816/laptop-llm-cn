@@ -127,6 +127,40 @@ def test_indexer_dense_limit_and_gradient_isolation():
     assert all(p.grad is None or torch.isfinite(p.grad).all() for p in sparse.parameters())
 
 
+def test_indexer_ties_do_not_depend_on_prefill_chunk_shape():
+    """同分的历史块必须一致路由；不能靠放宽 logits 容差隐藏硬路由差异。"""
+    torch.manual_seed(5)
+    model = small_model(attention_pattern="indexed", index_block_size=3, index_topk=3).eval()
+    projection_shapes = []
+    # 零 Q 投影制造精确同分，重复 token 则覆盖不同长度 GEMM 的舍入陷阱。
+    for layer in model.layers:
+        layer.attn.indexer.index_q.weight.data.zero_()
+        for projection in [layer.attn.indexer.index_q, layer.attn.indexer.index_k]:
+            projection.register_forward_pre_hook(
+                lambda module, args: projection_shapes.append(tuple(args[0].shape))
+            )
+    ids = torch.tensor([[7, 9, 7, 9, 7, 9, 7, 9, 7, 9, 7, 9, 7, 9]])
+    mask = torch.ones_like(ids, dtype=torch.bool)
+    mask[:, :2] = False
+    full = model(ids, attention_mask=mask).logits
+    for chunks in [[1] * 14, [4, 3, 1, 6], [8, 6]]:
+        cache, pieces, start = None, [], 0
+        for width in chunks:
+            end = start + width
+            result = model(
+                ids[:, start:end],
+                attention_mask=mask[:, :end],
+                past_key_values=cache,
+                use_cache=True,
+            )
+            cache = result.past_key_values
+            pieces.append(result.logits)
+            start = end
+        torch.testing.assert_close(full, torch.cat(pieces, 1), atol=2e-6, rtol=2e-5)
+    # 同输入的 canonical reference 投影不能随 chunk 长度切换 GEMM 形状。
+    assert set(projection_shapes) == {(1, model.config.dim)}
+
+
 def test_depth_mixer_and_sinkhorn_constraints():
     sources = torch.randn(5, 2, 3, 8, requires_grad=True)
     mixer = AttentionResidual(8)
