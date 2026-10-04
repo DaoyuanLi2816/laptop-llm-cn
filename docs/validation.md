@@ -1,5 +1,41 @@
 # 验证记录：正确性不等于能力
 
+## v0.3 前沿实验室（2026-10-03）
+
+本地 Windows/Python 3.10、PyTorch 2.13.0+cu130，CUDA 为 NVIDIA GeForce RTX 4080。
+这是桌面 GPU 路径验证，**不是笔记本实测，也不是独立能力评测**。CPU 不依赖 CUDA。
+
+| 检查 | 观察 / 边界 |
+|---|---|
+| 本地测试 | 96 项通过，包含 6 项 CUDA；CPU CI 应为 90 项通过、6 项跳过。仅有现有 FastAPI/Starlette testclient 弃用提醒 |
+| Frontier CPU | 三种架构各 pretrain/SFT/DPO＋MOPD＋agent-GRPO，共 11 阶段，各 2 步；脚本耗时约 19.8s |
+| Frontier CUDA FP32 | 同流程约 61.0s；小矩阵/Python 循环下 GPU 更慢，**没有加速结论** |
+| 模型规模 | hybrid 354,512、indexed 286,496、mHC 295,820 参数；实际窗口 192，共享 tokenizer hash `68b9bcf99c14029e4d594683a892a23cd0b542e945c8596f3284cec61776a660` |
+| FP4 存储 | hybrid 模型唯一 storage：1,418,048 → 366,992 bytes（约 3.86×），不包含 optimizer，不是文件/峰值显存指标 |
+| FP4 数值误差 | 固定 prompt 全位置 logits RMSE：CPU 0.05832067，CUDA 0.05832062；不是量化无损或能力保留结论 |
+| 投机解码 | 两种架构之间的目标贪心 8 token 与普通目标解码相同；本例 6 个草稿接受、2 次目标前向＋bonus；不证明一般接受率或速度 |
+| Agent 负结果 | CPU/CUDA 两步 reward_mean 都为 0，所有组零方差；无任务学习收益证据。KL/辅助项仍可更新网络 |
+| 原理实验 | CSA2 共享对象/因果性、视觉前缀 CE backward、FP4 STE 梯度通过；这些实验未接入完整 CED、多模态聊天或生产 QAT |
+| 包与网页 | sdist/wheel 构建、从仓库外的独立 `--target` wheel 安装目录加载 FP4 checkpoint 并启动 HTTP 服务；浏览器实测 Logo、发送、SSE 结束/按钮恢复、新对话，无页面 JS error/warn |
+| 编码兼容 | 强制 `PYTHONIOENCODING=cp1252`、`PYTHONUTF8=0` 后运行完整 frontier smoke 成功；入口显式配置 UTF-8 |
+| 旧课程回归 | v0.3 代码重新跑通 `lab_smoke.py` 的 8 个阶段，PPO/RM/LoRA 等路径仍可用 |
+
+数值测试还覆盖：KDA 单步 oracle、cache 多 token 追加/不可变分支、AttnRes activation-checkpoint 梯度等价、mHC 行列归一化、索引 KL 梯度隔离、MTP 标签偏移与真实预训练梯度、Muon state 重载、双侧校正原分母/GAR/hack 筛除。
+后训练日志在 v0.3 将总辅助项改名 `auxiliary_loss`，并保留原始 `input_ids`、`action_mask`、`behavior_logp`、`terminal_mask`、版本与 agent 事件。
+
+复查：
+
+```bash
+python -m pytest
+python scripts/frontier_smoke.py --output artifacts/frontier-recheck --device cpu
+python scripts/frontier_smoke.py --output artifacts/frontier-recheck-cuda --device cuda
+```
+
+每次用新目录。阅读 `report.json`、实际配置与完整失败轨迹；不同 PyTorch/设备/后端产生的采样轨迹可能不同，hash 不能当跨平台必然相同的断言。
+原论文阅读范围及差异见[台账](frontier-papers.md)。远程 CI 以当前提交的 Actions 为准，不把过去的绿灯算作本次证据。
+
+## v0.2 历史验证（2026-09-21）
+
 本次 v0.2 本地验证日期：2026-09-21。开发机器为 Windows、Intel i7-13700KF、
 RTX 4080 16GB，Python 3.10、PyTorch 2.13.0+cu130。这是桌面机测量，不能冒称笔记本实测。
 CPU 路径不要求 NVIDIA；Apple MPS 未在本次实机验证。

@@ -15,6 +15,12 @@ import torch
 from laptop_llm.architectures.lora import inject_lora, merge_lora
 from laptop_llm.data import pad_lm_batch
 from laptop_llm.engine import append_metric, load_inference_bundle, read_checkpoint, set_seed
+from laptop_llm.posttraining.agent import ArithmeticTask, collect_agent_rollout
+from laptop_llm.posttraining.frontier import (
+    calibrated_policy_loss,
+    freeze_routers,
+    redistribute_advantages,
+)
 from laptop_llm.posttraining.objectives import (
     clipped_policy_loss,
     clipped_value_loss,
@@ -33,7 +39,9 @@ def add_lab_parser(subparsers):
     parser = subparsers.add_parser(
         "lab", help="reward / PPO / GRPO-RLVR / on-policy distillation / LoRA"
     )
-    parser.add_argument("algorithm", choices=["reward", "ppo", "grpo", "opd", "lora"])
+    parser.add_argument(
+        "algorithm", choices=["reward", "ppo", "grpo", "opd", "mopd", "agent-grpo", "lora"]
+    )
     parser.add_argument("--checkpoint", required=True, help="可信的 SFT/预训练 checkpoint")
     parser.add_argument(
         "--data", required=True, help="JSONL：偏好对、SFT messages 或 prompt+answer"
@@ -51,6 +59,11 @@ def add_lab_parser(subparsers):
     parser.add_argument("--teacher", help="OPD 必填：同 tokenizer 的教师 checkpoint")
     parser.add_argument("--reward-model", help="PPO 必填：lab reward 保存的 checkpoint")
     parser.add_argument("--rank", type=int, default=4, help="LoRA rank")
+    parser.add_argument("--teachers", help='MOPD JSON：{"domain:effort":"同 tokenizer checkpoint"}')
+    parser.add_argument("--policy-objective", choices=["ppo", "calibrated"], default="ppo")
+    parser.add_argument("--freeze-router", action="store_true", help="MiMo 风格固定专家路由器")
+    parser.add_argument("--agent-turns", type=int, default=3)
+    parser.add_argument("--gar", action="store_true", help="agent-grpo 使用独立工具轨迹的质量因子")
     return parser
 
 
@@ -87,10 +100,14 @@ def run_lab(args: argparse.Namespace):
         raise ValueError("steps/batch/epochs/生成长度/学习率必须为正")
     if args.kl_coef < 0:
         raise ValueError("KL 系数不能为负")
-    if args.algorithm == "grpo" and args.group_size < 2:
+    if args.algorithm in {"grpo", "agent-grpo"} and args.group_size < 2:
         raise ValueError("GRPO group_size 至少为 2")
     if args.algorithm == "opd" and not args.teacher:
         raise ValueError("OPD 需要 --teacher；教师更强不是算法自动保证的")
+    if args.algorithm == "mopd" and not args.teachers:
+        raise ValueError("MOPD 需要 --teachers 域/effort 路由清单")
+    if args.gar and args.algorithm != "agent-grpo":
+        raise ValueError("GAR 只适用于有独立质量因子的 agent-grpo")
     if args.algorithm == "ppo" and not args.reward_model:
         raise ValueError("PPO-RLHF 需要先训练 --reward-model；规则奖励请运行 grpo")
     target = Path(args.output)
@@ -105,12 +122,30 @@ def run_lab(args: argparse.Namespace):
     if not rows:
         raise ValueError("数据为空")
     set_seed(args.seed)
+    if "quantization" in read_checkpoint(args.checkpoint):
+        raise ValueError("打包 FP4 checkpoint 是推理产物；后训练请使用未量化权重")
     model, tokenizer, device = load_inference_bundle(
         args.checkpoint, device_name=args.device, dtype_name="float32"
     )
     model.eval()  # 策略概率需与 rollout 一致；eval 不会阻止 autograd。
     reference = copy.deepcopy(model).requires_grad_(False).eval()
     teacher = frozen_bundle(args.teacher, tokenizer, device) if args.teacher else None
+    teacher_paths, teachers = {}, {}
+    if args.teachers:
+        teacher_paths = json.loads(Path(args.teachers).read_text(encoding="utf-8"))
+        if not isinstance(teacher_paths, dict) or not teacher_paths:
+            raise ValueError("teachers 必须是非空的 domain:effort → checkpoint mapping")
+        for key, path in teacher_paths.items():
+            if not isinstance(key, str) or not isinstance(path, str):
+                raise ValueError("教师路由键与 checkpoint 路径必须是字符串")
+            resolved = str((Path(args.teachers).resolve().parent / path).resolve())
+            teacher_paths[key] = resolved
+            teachers[key] = frozen_bundle(resolved, tokenizer, device)
+        for row in rows:
+            if teacher_key(row) not in teachers:
+                raise ValueError(f"缺少教师路由：{teacher_key(row)}")
+    if args.freeze_router:
+        freeze_routers(model)
     reward_model, reward_head, critic, value_head = None, None, None, None
     parameters = list(model.parameters())
     if args.algorithm == "reward":
@@ -133,6 +168,7 @@ def run_lab(args: argparse.Namespace):
         "data_sha256": hashlib.sha256(data_path.read_bytes()).hexdigest(),
         "checkpoint_sha256": file_sha256(args.checkpoint),
         "teacher_sha256": file_sha256(args.teacher) if args.teacher else None,
+        "teachers_sha256": {key: file_sha256(path) for key, path in teacher_paths.items()},
         "reward_model_sha256": file_sha256(args.reward_model) if args.reward_model else None,
         "torch_version": torch.__version__,
         "device_resolved": str(device),
@@ -167,13 +203,34 @@ def run_lab(args: argparse.Namespace):
                 metrics["pair_accuracy"] = float((scores[0] > scores[1]).float().mean())
             optimize(loss, parameters, optimizer)
         else:
-            groups = args.group_size if args.algorithm == "grpo" else 1
-            prompts = [row["prompt"] for row in batch_rows for _ in range(groups)]
-            rollout = collect_rollout(model, tokenizer, prompts, args.max_new_tokens)
+            groups = args.group_size if args.algorithm in {"grpo", "agent-grpo"} else 1
+            if args.algorithm == "agent-grpo":
+                tasks = [ArithmeticTask(**row["task"]) for row in batch_rows for _ in range(groups)]
+                prompts = [task.prompt() for task in tasks]
+                rollout, traces = collect_agent_rollout(
+                    model, tokenizer, tasks, args.max_new_tokens, args.agent_turns, step
+                )
+            else:
+                prompts = [row["prompt"] for row in batch_rows for _ in range(groups)]
+                rollout = collect_rollout(model, tokenizer, prompts, args.max_new_tokens)
             mask = rollout.action_mask
             with torch.no_grad():
                 ref_logp, _ = action_log_probs(reference, rollout.ids, rollout.attention_mask)
-                if args.algorithm == "grpo":
+                if args.algorithm == "agent-grpo":
+                    rewards = torch.tensor([trace["reward"] for trace in traces], device=device)
+                    quality = torch.tensor([trace["quality"] for trace in traces], device=device)
+                    advantages = (
+                        redistribute_advantages(rewards, quality, groups)
+                        if args.gar
+                        else group_advantages(rewards, groups)
+                    )[:, None].expand_as(mask)
+                    metrics["zero_variance_groups"] = float(
+                        (rewards.view(-1, groups).std(-1, unbiased=False) == 0).float().mean()
+                    )
+                    metrics["non_action_context_tokens"] = int(
+                        (rollout.attention_mask[:, 1:] & ~mask).sum()
+                    )
+                elif args.algorithm == "grpo":
                     expected = [row["answer"] for row in batch_rows for _ in range(groups)]
                     if any(type(answer) is not int for answer in expected):
                         raise ValueError("RLVR answer 必须是整数，不接受字符串或布尔值")
@@ -202,29 +259,50 @@ def run_lab(args: argparse.Namespace):
                     advantages, returns = generalized_advantage(
                         shaped, old_values, full_values[:, 1:], mask, rollout.terminal
                     )
-                if args.algorithm != "opd":
+                if args.algorithm not in {"opd", "mopd"}:
                     metrics["reward_mean"] = float(rewards.mean())
-                else:
+                elif args.algorithm == "opd":
                     teacher_logits = (
                         teacher(rollout.ids, attention_mask=rollout.attention_mask)
                         .logits[:, :-1]
                         .detach()
                     )
+                else:
+                    # 学生独立生成自己的前缀，各领域教师在同一前缀上提供分布。
+                    # 不平均彼此冲突的教师 logits；按样本的 domain/effort 路由。
+                    keys = [teacher_key(row) for row in batch_rows]
+                    teacher_logits = torch.empty(
+                        *rollout.ids[:, :-1].shape, model.config.vocab_size, device=device
+                    )
+                    for key in sorted(set(keys)):
+                        indices = torch.tensor(
+                            [i for i, item in enumerate(keys) if item == key], device=device
+                        )
+                        teacher_logits[indices] = teachers[key](
+                            rollout.ids[indices], attention_mask=rollout.attention_mask[indices]
+                        ).logits[:, :-1]
+                    metrics["teacher_routes"] = keys
             metrics["response_tokens"] = int(mask.sum())
             metrics["eos_fraction"] = float(rollout.terminal.any(-1).float().mean())
             for _ in range(args.epochs):
                 optimizer.zero_grad(set_to_none=True)
                 logp, output = action_log_probs(model, rollout.ids, rollout.attention_mask)
-                if args.algorithm == "opd":
+                if args.algorithm in {"opd", "mopd"}:
                     loss = distillation_loss(output.logits[:, :-1], teacher_logits, mask)
                 else:
-                    loss = clipped_policy_loss(logp, rollout.old_logp, advantages, mask)
+                    if args.policy_objective == "calibrated":
+                        loss, dropped = calibrated_policy_loss(
+                            logp, rollout.old_logp, advantages, mask
+                        )
+                        metrics["calibration_dropped_fraction"] = float(dropped)
+                    else:
+                        loss = clipped_policy_loss(logp, rollout.old_logp, advantages, mask)
                     kl = reference_kl(logp, ref_logp, mask)
                     metrics["reference_kl_estimate"] = float(kl.detach())
                     metrics["old_policy_log_ratio_abs"] = float(
                         masked_mean((logp.detach() - rollout.old_logp).abs(), mask)
                     )
-                    if args.algorithm == "grpo":
+                    if args.algorithm in {"grpo", "agent-grpo"}:
                         loss = loss + args.kl_coef * kl
                     else:
                         values = value_head(
@@ -234,20 +312,29 @@ def run_lab(args: argparse.Namespace):
                         loss = loss + 0.5 * value_loss
                         metrics["value_loss"] = float(value_loss.detach())
                 metrics["objective_loss"] = float(loss.detach())
-                metrics["router_auxiliary_loss"] = float(output.auxiliary_loss.detach())
+                metrics["auxiliary_loss"] = float(output.auxiliary_loss.detach())
                 loss = loss + output.auxiliary_loss
                 optimize(loss, parameters, optimizer)
             # 保存原始输出和奖励，零奖励也必须留下，不能只展示成功样例。
             with (target / "rollouts.jsonl").open("a", encoding="utf-8") as handle:
                 for index, text in enumerate(rollout.texts):
+                    length = int(rollout.attention_mask[index].sum())
                     handle.write(
                         json.dumps(
                             {
                                 "step": step + 1,
                                 "prompt": prompts[index],
                                 "text": text,
+                                "input_ids": rollout.ids[index, :length].tolist(),
+                                "action_mask": mask[index, : length - 1].tolist(),
+                                "behavior_logp": rollout.old_logp[index, : length - 1].tolist(),
+                                "terminal_mask": rollout.terminal[index, : length - 1].tolist(),
+                                "policy_version": step,
+                                "agent_trace": traces[index]
+                                if args.algorithm == "agent-grpo"
+                                else None,
                                 "reward": None
-                                if args.algorithm == "opd"
+                                if args.algorithm in {"opd", "mopd"}
                                 else float(rewards[index]),
                             },
                             ensure_ascii=False,
@@ -297,3 +384,9 @@ def file_sha256(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def teacher_key(row):
+    if not isinstance(row.get("domain"), str) or row.get("effort") not in {"low", "high", "max"}:
+        raise ValueError("MOPD 样本需要 domain 与 effort=low/high/max")
+    return f"{row['domain']}:{row['effort']}"

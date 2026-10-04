@@ -1,12 +1,11 @@
 # 公开源码阅读索引
 
-调研日期：2026-09-21。这里列出实际查阅的公开入口及本仓库教学映射。
+v0.2 源码调研日期：2026-09-21；v0.3 论文增补：2026-10-03，详见[前沿论文台账](frontier-papers.md)。下面保留原版本源码指针，不将它们称为当前上游最新版本。
 固定 commit 的链接用于可复查阅读；上游 main 会持续演进。本项目为独立教学实现，
 没有把参考仓库整体复制进来，也不宣称兼容它们的 checkpoint 或性能。
 
 | 参考 | 查阅入口 | 应带着什么问题读 | 本地映射 |
 |---|---|---|---|
-| MiniMind | [README 与训练目录](https://github.com/jingyaogong/minimind/tree/1e6e909f887a442c4df7797b6fcf7464c374a4a2)；[train_grpo.py](https://github.com/jingyaogong/minimind/blob/1e6e909f887a442c4df7797b6fcf7464c374a4a2/trainer/train_grpo.py) | 低门槛入口如何组织？分组奖励怎样进入目标？ | README、lab_smoke、GRPO |
 | DeepSeek-V3 | [inference/model.py](https://github.com/deepseek-ai/DeepSeek-V3/blob/9b4e9788e4a3a731f7567338ed15d3ec549ce03b/inference/model.py) | MLA、专家、并行线性层与 RoPE 各承担什么？ | model、mla、moe、系统课 |
 | DeepSeek-V3.2-Exp | [inference/model.py](https://github.com/deepseek-ai/DeepSeek-V3.2-Exp/blob/87e509a2e5a100d221c97df52c6e8be7835f0057/inference/model.py) | learned indexer 与实际 sparse attention kernel 的边界？ | sparse 课中的 DSA 差异 |
 | verl | [core_algos.py](https://github.com/verl-project/verl/blob/8e03c039f9a70750490c93196b759b332fc029fd/verl/trainer/ppo/core_algos.py) | 优势估计、mask 与 reduction 怎样解耦？ | objectives、rollout、trainer |

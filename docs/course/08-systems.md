@@ -47,7 +47,7 @@ python scripts/ddp_lesson.py
 
 在 [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) 阅读通信与 parallel state，
 不只看配置名称。画一张“某个 rank 持有哪段参数、哪个样本、哪一段序列”的表，比背缩写有效。
-DeepSeek 的 MTP 是额外多 token 预测目标；它不等于本仓库普通 next-token CE，当前仅作阅读主题。
+DeepSeek 的 MTP 是额外多 token 预测目标，不等于普通 next-token CE。v0.3 已提供递归辅助模块、共享 embedding/head 与预训练/SFT 标签测试，见[第 14 章](14-training.md)；不等于已集成生产草稿解码器。
 
 ## 恢复是算法契约，不只是读一个 pt
 

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "laptop-llm-cn"
-version = "0.2.0"
-description = "公开先进 LLM 技术的中文教学实验室：Sparse Attention、MLA、MoE、PPO、GRPO、在线蒸馏与本地 Serving"
+version = "0.3.0"
+description = "前沿 LLM 的中文代码教材：KDA、AttnRes、MSA、mHC、Engram、MTP、agent RL、多教师蒸馏与本地 Serving"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

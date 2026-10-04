@@ -48,5 +48,7 @@ jobs:
       - run: laptop-llm pipeline --config configs/smoke.yaml --device cpu
       - run: laptop-llm pipeline --config configs/research_mla.yaml --device cpu
       - run: laptop-llm pipeline --config configs/research_moe.yaml --device cpu
+      - name: Frontier architectures, post-training and inference
+        run: python scripts/frontier_smoke.py --output artifacts/ci-frontier --device cpu
       - run: python scripts/ddp_lesson.py
       - run: python scripts/bandit_lesson.py

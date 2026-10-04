@@ -1,8 +1,10 @@
 <div align="center">
 
+<img src="laptop_llm/assets/logo-v3.png" width="180" alt="LaptopLLM-CN：书本、笔记本与神经路径" />
+
 # LaptopLLM-CN
 
-### 把大模型，拆开学。
+### 把前沿论文，变成代码。
 
 **一台电脑 · 原生 PyTorch · 中文代码教材 · 从预训练到后训练，再到本地试聊**
 
@@ -10,7 +12,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab)](pyproject.toml)
 [![License](https://img.shields.io/badge/License-MIT-19715b)](LICENSE)
 
-[开始实验](#十分钟内先认识完整流程) · [中文课程](docs/course/README.md) · [技术地图](#不是名词清单每一项都有位置) · [源码对照](docs/references.md) · [验证记录](docs/validation.md)
+[开始实验](#十分钟内先认识完整流程) · [18 章中文课程](docs/course/README.md) · [前沿论文](docs/frontier-papers.md) · [实验室](docs/frontier-lab.md) · [验证记录](docs/validation.md)
 
 </div>
 
@@ -19,11 +21,25 @@
 这里不把 PPO 藏在一个 `trainer.train()` 里，也不把 MoE 当作配置文件里的缩写。
 我们从一个可以读完的 decoder 开始，把 **稀疏注意力、MLA、专家路由、rollout、奖励模型、PPO/GRPO、在线蒸馏、KV Cache** 拆成能运行、能手算、能测试的模块。最后用自己的 checkpoint 打开网页聊天。
 
-项目延续 `tiny_LLM.py` 的“代码即教材、中文讲透”风格；v0.2 从三阶段入门项目扩展为模型、后训练、系统三条学习路线。文档组织借鉴 [MiniMind](https://github.com/jingyaogong/minimind) 的低门槛实验入口，算法与系统对照公开的 DeepSeek、Qwen、verl、TRL、Megatron-LM 和 SGLang。不是它们的权重兼容实现。
+项目延续 `tiny_LLM.py` 的“代码即教材、中文讲透”风格。**v0.3 Frontier Lab** 将模型、后训练、推理和研究方法连成一套可测试的学习系统。阅读日期为 **2026-10-03**；依据官方论文与技术报告，而不是把热门缩写直接堆进配置。具体版本、阅读章节和未实现项见[论文台账](docs/frontier-papers.md)。不是任何上游模型的 checkpoint 兼容实现。
 
 熟悉原文件的读者，可以先看[从 tiny_LLM.py 到新结构的迁移地图](docs/from-tiny.md)。
 
 > **定位要诚实。** 这是公开先进 LLM 技术的教学缩影，不是 OpenAI 内部仓库的复制品，也不保证读完即可胜任顶尖实验室的全部工作。工业系统的分布式通信、数据治理、容错、安全和性能工程会产生新的设计问题，绝不只是把参数放大。这里把这些差距也作为课程内容。
+
+## v0.3：沿着前沿技术的四条主线学习
+
+| 主线 | 可运行的教学实现 | 论文对照与明确差距 |
+|---|---|---|
+| 把长上下文变便宜 | KDA 固定状态＋3:1 KDA/NoPE MLA；可学习 block indexer、真实 gather | Kimi K3、MiniMax MSA；无 chunkwise/fused 稀疏 kernel |
+| 改变信息如何跨层传播 | full/block AttnRes、动态 mHC＋Sinkhorn、Engram 短 n-gram 记忆 | Kimi K3、DeepSeek V4/V4.1；无 SinglePass mHC、主机预取 |
+| 更丰富的训练信号 | MTP、Muon/AdamW 混合优化；domain/effort 多教师 OPD；agent-GRPO、双侧校正、GAR、router 冻结 | GLM-5、MiMo V2.6、Kimi K3、Thinking Machines；单设备同步实现，非异步平台 |
+| 训练与部署一起考虑 | E2M1 FP4 真实 nibble 打包、STE 算子、精确投机采样、网页 SSE | Gemma 4、gpt-oss、MiMo；不是 MXFP4/NVFP4 格式，无加速 kernel |
+| 将“论文理解”变成可证伪实验 | CSA2 Full/Reindex/Reuse 共享代数实验、图像 patch 前缀 backward；held-out harness 与行为审计课程 | DeepSeek V4.1、Gemma 4、Anthropic CHIVE、OpenAI system cards；前两项**未接入主模型服务**，后两项为研究练习 |
+
+这些设计不是每个顶级模型的统一“标配”。`hybrid`、`indexed`、`mhc` 是三份可替换的实验配置；不要把互斥路线硬拼成一个“超级模型”。每个模块都配有中文解释、可测不变量和失败边界。
+
+新增 [11–18 章](docs/course/README.md)：从状态递推与深度路由，一直到低精度、投机采样、多模态接口和可信评测。先读一章、跑一个数值测试，再回到原论文比较差异。
 
 ## 先看全局，再看代码
 
@@ -69,11 +85,16 @@ laptop-llm pipeline --config configs/smoke.yaml --device cpu
 # 进阶：自动生成原创算术数据，跑通全部八个阶段
 python scripts/lab_smoke.py --output artifacts/my-first-lab --device cpu
 
+# 前沿：三种架构各跑 pretrain/SFT/DPO，再跑 MOPD、agent-GRPO、FP4 与投机解码
+python scripts/frontier_smoke.py --output artifacts/my-frontier --device cpu
+
 # 本地网页：选择中文 smoke 权重，或换成你自己训练的权重
 laptop-llm serve --checkpoint artifacts/smoke/sft/final.pt --device cpu
 ```
 
 浏览器打开 **http://127.0.0.1:8000**；接口说明在 `/docs`。支持多轮历史、流式显示、温度/长度调节、清空对话、可选 API key。原始 `<think>` 文本可见，不伪装为内部思维。网页无 CDN、无前端构建和付费 API。
+
+<img src="docs/assets/frontier-demo.jpg" width="420" alt="v0.3 本地网页实测：Logo、采样设置和模型信息" />
 
 **smoke 模型通常只输出随机文本。** 跑通说明工程链路成立，不说明模型聪明。算术实验也是有限任务，不是通用推理基准。请先读[验证记录与负结果](docs/validation.md)，再决定是否增加训练量。
 
@@ -95,10 +116,11 @@ laptop-llm serve --checkpoint artifacts/smoke/sft/final.pt --device cpu
 | GRPO / RLVR | 运行 | 同题分组采样、组内标准化、规则奖励、KL、零方差组诊断 |
 | On-policy Distillation | 运行 | 学生实时采样，冻结教师，回答位置 full-vocabulary reverse KL |
 | LoRA | 运行 | 注入 q/v 低秩适配器、实际 SFT 更新、合并普通权重 |
-| KV Cache / Serving | 运行＋教学 | GQA 与 MLA cache；串行 FastAPI、聊天 completions 与 SSE 子集 |
+| KV Cache / Serving | 运行＋教学 | GQA / MLA / indexed KV 与 KDA state；串行 FastAPI、聊天 completions 与 SSE 子集 |
 | DDP | 独立教学实验 | 两进程 CPU/gloo，验证梯度等于单进程全局 batch |
-| DSA / FP8 / MTP / TP / PP / EP / CP / FSDP / ZeRO | 阅读 | [工业系统章节](docs/course/08-systems.md)，不宣称已集成 |
-| Paged KV / continuous batching / speculative decoding / quantization | 阅读 | [服务章节](docs/course/09-serving.md)，不是高吞吐推理引擎 |
+| MTP / Muon / KDA / AttnRes / mHC / Engram / learned sparse indexer | 运行＋教学 | 新模块见[前沿实验室](docs/frontier-lab.md)；不复现上游生产 kernel |
+| FP4 / speculative decoding | 运行＋教学 | 真打包/重载、精确拒绝采样；参考后端反量化/全前缀重算，不承诺加速 |
+| FP8 / TP / PP / EP / CP / FSDP / ZeRO / paged KV / continuous batching | 阅读 | [工业系统章节](docs/course/08-systems.md)，尚未集成 |
 
 实现覆盖不是“所有顶级模型的统一标配”。例如 GQA 和 MLA 是替代设计，dense 与 MoE 各有取舍，RL 不保证胜过 SFT。
 
@@ -109,16 +131,23 @@ laptop_llm/
   tokenizer.py          # BPE、角色模板、监督与截断边界
   data.py               # token cache、SFT、偏好对、padding
   model.py              # 可读 decoder 主干与 KV Cache
-  architectures/        # sparse / MoE / MLA / LoRA 独立零件
+  architectures/        # sparse / indexed / KDA / MLA / MoE / AttnRes / mHC / Engram
+    compression.py      # CSA2/CED 独立共享机制实验，非 serving
+  optim.py              # 矩阵 Muon＋其余参数 AdamW；真实 optimizer state
   engine.py             # 数据驱动的 pretrain / SFT / DPO
   posttraining/
     rollout.py          # token、动作 mask、终止与旧策略概率
     rewards.py          # 规则 verifier 与 reward/value head
     objectives.py       # PPO、GAE、GRPO、KL、蒸馏的纯函数
     trainer.py          # 同步 rollout → 优化 → 指标 → checkpoint
+    frontier.py         # 校正、GAR、候选集概率重放、策略版本 mask
+    agent.py            # 无 shell/网络的工具环境，动作/反馈分离与原始 token 记录
+  quantization.py       # FP4 字节打包、只读 PackedLinear、STE 算子
+  speculative.py        # 精确投机采样的可读参考实现
+  multimodal.py         # 图像 patch 前缀独立实验，不是预训练 VLM
   generation.py         # prefill、decode、采样
   server.py             # 本地网页＋HTTP/SSE
-configs/                # smoke / cpu / laptop_16gb / research_moe / research_mla
+configs/                # 基础三档＋frontier_hybrid / frontier_indexed / frontier_mhc
 scripts/                # 全流程 smoke、DDP 对照、数据导出
 docs/course/            # 从 tensor 到工业系统的中文课程
 tests/                  # 数值契约、训练更新、恢复、接口测试
@@ -163,4 +192,4 @@ python scripts/ddp_lesson.py
 
 欢迎增加**带数值测试、中文推导和边界说明**的课程实现。新算法请先给出可区分于现有目标的实验，而不是只添一个参数名。
 
-感谢 [MiniMind](https://github.com/jingyaogong/minimind)、[DeepSeek](https://github.com/deepseek-ai)、[Qwen](https://github.com/QwenLM/Qwen3)、[verl](https://github.com/verl-project/verl)、[TRL](https://github.com/huggingface/trl)、[Megatron-LM](https://github.com/NVIDIA/Megatron-LM)、[SGLang](https://github.com/sgl-project/sglang) 的公开工作。具体源码版本与阅读映射见[参考索引](docs/references.md)。本项目代码 MIT；第三方模型、数据与代码遵守其各自许可证，不因本仓库 MIT 自动改授权。
+感谢 Kimi、DeepSeek、Z.ai、Xiaomi MiMo、MiniMax、Google DeepMind、OpenAI、Anthropic、Thinking Machines 及公开训练/推理框架的研究工作。具体来源见[论文台账](docs/frontier-papers.md)与[源码索引](docs/references.md)。本项目代码 MIT；第三方资产遵守各自许可证。[Logo 设计与生成提示词](docs/branding.md)。

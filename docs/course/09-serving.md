@@ -44,7 +44,7 @@ prefill 通常更像矩阵计算，decode 常受权重读取与 KV 带宽影响�
 默认只监听 localhost。不要以“设置 API key”为由直接暴露到公网；还需要 TLS、
 网关认证、请求体限制、并发预算、日志隐私与攻击面审计。
 
-## 生产优化阅读路线（未实现）
+## 生产优化阅读路线（多数尚未实现）
 
 **Paged KV：** 逻辑 token 到物理 block 的间接映射，减少连续分配碎片；需要 block table、
 引用计数、生命周期与 kernel 配合，不只是把 Python list 改成 dict。
@@ -59,7 +59,7 @@ prefill 通常更像矩阵计算，decode 常受权重读取与 KV 带宽影响�
 直接接受 draft 的 token 不能宣称与 target 无损等价。draft 成本、接受率和 batch 状态决定是否加速。
 
 **量化：** weight-only INT8/INT4 与 KV 量化不是同一件事。需要校准/尺度、算子支持与精度回归，
-FP16 推理也不能冒称 INT4。教学 repo 当前未提供量化导出或 GGUF 权重。
+FP16 推理也不能冒称 INT4。v0.3 提供独立的 E2M1/FP32-scale FP4 打包导出与精确投机采样参考，见[第 17 章](17-deployment.md)；不是高速 kernel，不提供 GGUF 或 paged/continuous-batching 后端。
 
 从 [SGLang](https://github.com/sgl-project/sglang) 读 scheduler/cache 与后端边界，再回来看
 这个单请求循环，就能指出缺了什么。目标是理解差距，而不是掩盖差距。

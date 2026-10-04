@@ -21,6 +21,8 @@ class LatentAttention(nn.Module):
         self.head_dim = config.dim // config.n_heads
         self.rank = config.kv_lora_rank
         self.dropout = config.dropout
+        self.nope = config.mla_nope
+        self.gate_proj = nn.Linear(config.dim, config.dim, bias=False) if config.gated_attention else None
         self.kv_down = nn.Linear(config.dim, self.rank, bias=False)
         self.kv_norm = RMSNorm(self.rank, config.norm_eps)
         self.kv_up = nn.Linear(self.rank, 2 * config.dim, bias=False)
@@ -33,7 +35,10 @@ class LatentAttention(nn.Module):
 
         batch, length, _ = x.shape
         latent = self.kv_norm(self.kv_down(x))[:, None]  # [B,1,T,R]
-        rope_key = apply_rope(self.k_rope(x)[:, None], cos, sin)  # 共享的位置键
+        rope_key = (
+            x.new_empty(batch, 1, length, 0) if self.nope
+            else apply_rope(self.k_rope(x)[:, None], cos, sin)
+        )  # NoPE 全局层不缓存位置键；保留原参数名以兼容旧实验。
         q = self.q_proj(x).view(batch, length, self.heads, 2 * self.head_dim).transpose(1, 2)
         q_content, q_position = q.chunk(2, dim=-1)
         q_position = apply_rope(q_position, cos, sin)
@@ -50,8 +55,10 @@ class LatentAttention(nn.Module):
         absorbed_q = torch.einsum("bhtd,hdr->bhtr", q_content, w_key)
         scores = torch.einsum(
             "bhtr,bsr->bhts", absorbed_q.float(), latent[:, 0].float()
-        ) + torch.einsum("bhtd,bsd->bhts", q_position.float(), rope_key[:, 0].float())
-        scores = scores / math.sqrt(2 * self.head_dim)
+        )
+        if not self.nope:
+            scores = scores + torch.einsum("bhtd,bsd->bhts", q_position.float(), rope_key[:, 0].float())
+        scores = scores / math.sqrt(self.head_dim if self.nope else 2 * self.head_dim)
         positions = past + torch.arange(length, device=x.device)
         keys = torch.arange(latent.size(2), device=x.device)
         mask = (keys[None] <= positions[:, None])[None, None]
@@ -65,4 +72,7 @@ class LatentAttention(nn.Module):
         probabilities = F.dropout(probabilities, p=self.dropout, training=self.training)
         context = torch.einsum("bhts,bsr->bhtr", probabilities, latent[:, 0])
         output = torch.einsum("bhtr,hdr->bhtd", context, w_value)
-        return self.o_proj(output.transpose(1, 2).reshape(batch, length, -1)), present
+        output = output.transpose(1, 2).reshape(batch, length, -1)
+        if self.gate_proj is not None:
+            output = output * self.gate_proj(x).sigmoid()
+        return self.o_proj(output), present

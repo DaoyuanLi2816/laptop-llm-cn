@@ -41,14 +41,32 @@ class ModelConfig:
     shared_experts: int = 1
     router_aux_coef: float = 0.01
     router_z_coef: float = 0.001
+    # v0.3 前沿阅读实验：默认关闭，旧配置/权重保持兼容。
+    delta_conv_kernel: int = 3
+    hybrid_global_every: int = 4
+    mla_nope: bool = False
+    gated_attention: bool = False
+    index_dim: int = 16
+    index_block_size: int = 8
+    index_topk: int = 2
+    index_loss_coef: float = 0.1
+    residual_type: str = "standard"
+    attnres_block_size: int = 0  # 0=Full；正整数=每块包含的子层数（attn/FFN 各算一层）
+    hc_streams: int = 4
+    sinkhorn_iterations: int = 20
+    engram_table_size: int = 0
+    engram_dim: int = 16
+    engram_max_order: int = 3
+    mtp_depth: int = 0
+    mtp_loss_coef: float = 0.1
 
     def __post_init__(self) -> None:
         if min(self.dim, self.n_layers, self.n_heads, self.n_kv_heads) <= 0:
             raise ValueError("模型维度、层数、头数必须为正")
-        if self.attention_pattern not in {"dense", "sliding"}:
-            raise ValueError("attention_pattern 必须为 dense/sliding")
-        if self.attention_type not in {"gqa", "mla"} or self.kv_lora_rank <= 0:
-            raise ValueError("attention_type 必须是 gqa/mla，latent rank 必须为正")
+        if self.attention_pattern not in {"dense", "sliding", "indexed"}:
+            raise ValueError("attention_pattern 必须为 dense/sliding/indexed")
+        if self.attention_type not in {"gqa", "mla", "kda", "hybrid"} or self.kv_lora_rank <= 0:
+            raise ValueError("attention_type 必须是 gqa/mla/kda/hybrid，latent rank 必须为正")
         if self.attention_type == "mla" and (self.attention_pattern != "dense" or self.qk_norm):
             raise ValueError("教学 MLA 暂不组合 sliding/qk_norm；请分开做对照实验")
         if self.sliding_window <= 0 or self.attention_sinks < 0 or self.dense_every < 0:
@@ -70,6 +88,39 @@ class ModelConfig:
             raise ValueError("每个注意力头的维度必须是偶数，RoPE 才能两两旋转")
         if self.max_seq_len < 8:
             raise ValueError("max_seq_len 太小，至少应为 8")
+        if self.attention_type in {"kda", "hybrid"} and self.attention_pattern != "dense":
+            raise ValueError("KDA/hybrid 不组合 attention_pattern；全局层为 MLA")
+        if self.residual_type not in {"standard", "attnres", "mhc"}:
+            raise ValueError("residual_type 必须是 standard/attnres/mhc")
+        if (
+            min(
+                self.delta_conv_kernel,
+                self.hybrid_global_every,
+                self.index_dim,
+                self.index_block_size,
+                self.index_topk,
+                self.hc_streams,
+                self.sinkhorn_iterations,
+                self.engram_dim,
+            )
+            < 1
+        ):
+            raise ValueError("前沿模块的维度/窗口/迭代次数必须为正")
+        if (
+            min(
+                self.attnres_block_size,
+                self.engram_table_size,
+                self.mtp_depth,
+                self.index_loss_coef,
+                self.mtp_loss_coef,
+            )
+            < 0
+        ):
+            raise ValueError("辅助头深度、表大小与损失系数不能为负")
+        if self.engram_max_order not in {2, 3, 4}:
+            raise ValueError("教学 Engram 支持 2/3/4-gram")
+        if self.attention_pattern == "indexed" and self.attention_type != "gqa":
+            raise ValueError("MSA 阅读实验只组合 GQA")
 
     @property
     def ffn_dim(self) -> int:
@@ -105,6 +156,7 @@ class StageConfig:
     gradient_checkpointing: bool = False
     dpo_beta: float = 0.1
     dpo_label_smoothing: float = 0.0
+    optimizer: str = "adamw"
 
     def __post_init__(self) -> None:
         positive = {
@@ -121,6 +173,8 @@ class StageConfig:
                 raise ValueError(f"{name} 必须大于 0")
         if self.dtype not in {"auto", "float32", "float16", "bfloat16"}:
             raise ValueError("dtype 必须是 auto/float32/float16/bfloat16 之一")
+        if self.optimizer not in {"adamw", "muon"}:
+            raise ValueError("optimizer 必须为 adamw/muon")
 
 
 @dataclass

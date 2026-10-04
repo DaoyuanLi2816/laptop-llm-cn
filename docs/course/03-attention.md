@@ -29,7 +29,7 @@ sink 和窗口重叠时必须去重，否则 softmax 会把同一个 token 算�
 `dense_every=2` 让每第二层保持全局注意力，扩展信息通路。全局层也带回二次计算。
 本实现不驱逐旧 KV，因此它减少 attention 边数，但没有把 KV 内存变成常数。
 
-DeepSeek DSA 使用学习到的索引来选 token；本项目固定位置窗口不等于 DSA。
+DeepSeek DSA 使用学习到的索引来选 token；本章 `sparse.py` 的固定位置窗口不等于 DSA。v0.3 的另一条可学习 block 索引路线见[第 13 章](13-indexing.md)，也不宣称与 DSA 完全相同。
 阅读[官方实现](https://github.com/deepseek-ai/DeepSeek-V3.2-Exp)时，区分 indexer 成本、选中 token 的注意力成本和 kernel 成本。
 
 ## MLA：用代数消去展开缓存

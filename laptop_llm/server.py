@@ -7,10 +7,11 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from laptop_llm.engine import load_inference_bundle
@@ -47,7 +48,7 @@ def create_app(
     generation_lock = threading.Lock()
     app = FastAPI(
         title="LaptopLLM API",
-        version="0.2.0",
+        version="0.3.0",
         description="本地小模型的 OpenAI 兼容接口",
     )
 
@@ -64,6 +65,9 @@ def create_app(
             "device": str(resolved_device),
             "parameters": model.num_parameters(),
             "max_seq_len": model.config.max_seq_len,
+            "attention": model.config.attention_type + "/" + model.config.attention_pattern,
+            "residual": model.config.residual_type,
+            "experts": model.config.num_experts,
         }
 
     @app.get("/v1/models")
@@ -145,6 +149,10 @@ def create_app(
     def web_chat() -> str:
         return CHAT_HTML
 
+    @app.get("/assets/logo.png", include_in_schema=False)
+    def logo():
+        return FileResponse(Path(__file__).parent / "assets" / "logo-v3.png", media_type="image/png")
+
     return app
 
 
@@ -191,6 +199,7 @@ CHAT_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" type="image/png" href="/assets/logo.png">
   <title>LaptopLLM · 本地研究实验室</title>
   <style>
     :root{font-family:system-ui,sans-serif;color:#182230;background:#eff3f1}
@@ -209,7 +218,7 @@ CHAT_HTML = r"""<!doctype html>
     @media(max-width:600px){main{margin:1rem auto}h1{font-size:2rem}.user{margin-left:5%}.assistant{margin-right:5%}}
   </style>
 </head>
-<body><main><div class="eyebrow">LAPTOP LLM / RESEARCH LAB</div><h1>把大模型，拆开学。</h1>
+<body><main><img src="/assets/logo.png" alt="LaptopLLM-CN：书本、笔记本与神经分支" width="100" height="100" style="float:right"><div class="eyebrow">LAPTOP LLM / FRONTIER LAB · v0.3</div><h1>把前沿论文，变成代码。</h1>
 <p class="intro">从 token 到推理，从奖励到策略更新。这里运行的是你自己的本地 checkpoint。<br>小规模验证算法，不把流水线跑通当作智能证明。</p>
 <div class="card"><header><div><b>本地试聊</b><br><small>无云端 API · 无需付费算力</small></div><button id="reset" type="button">新对话</button></header>
 <div class="settings"><label>采样温度<input id="temperature" type="number" min="0" max="2" step="0.1" value="0.8"></label>

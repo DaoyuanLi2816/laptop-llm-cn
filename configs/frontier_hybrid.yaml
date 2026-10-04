@@ -1,0 +1,50 @@
+# 前沿机制实验；512 上下文供 agent 协议使用，小模型不承诺聊天质量。
+name: frontier-hybrid
+seed: 42
+output_dir: artifacts/frontier_hybrid
+tokenizer_path: artifacts/frontier_hybrid/tokenizer.json
+tokenizer_vocab_size: 512
+tokenizer_min_frequency: 1
+tokenizer_corpus: [data/demo/pretrain_train.txt]
+data:
+  pretrain_train: data/demo/pretrain_train.txt
+  pretrain_eval: data/demo/pretrain_eval.txt
+  sft_train: data/demo/sft_train.jsonl
+  sft_eval: data/demo/sft_eval.jsonl
+  dpo_train: data/demo/dpo_train.jsonl
+  dpo_eval: data/demo/dpo_eval.jsonl
+model:
+  dim: 32
+  n_layers: 4
+  n_heads: 4
+  n_kv_heads: 2
+  max_seq_len: 512
+  attention_type: hybrid
+  residual_type: attnres
+  attnres_block_size: 4
+  num_experts: 4
+  experts_per_token: 2
+  shared_experts: 1
+  engram_table_size: 257
+  mtp_depth: 2
+stages:
+  pretrain: &stage
+    batch_size: 1
+    gradient_accumulation_steps: 1
+    max_steps: 2
+    learning_rate: 0.001
+    min_learning_rate: 0.0001
+    warmup_steps: 1
+    log_interval: 1
+    eval_interval: 2
+    eval_batches: 1
+    save_interval: 100
+    dtype: float32
+    gradient_checkpointing: true
+    optimizer: muon
+  sft:
+    <<: *stage
+    learning_rate: 0.0005
+  dpo:
+    <<: *stage
+    learning_rate: 0.0001

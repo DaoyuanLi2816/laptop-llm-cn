@@ -10,12 +10,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+from laptop_llm.architectures.cache import CacheBundle, DeltaCache, IndexedCache, cache_length
+from laptop_llm.architectures.delta import DeltaAttention
+from laptop_llm.architectures.engram import NgramMemory
+from laptop_llm.architectures.indexed import BlockIndexer
 from laptop_llm.architectures.mla import LatentAttention
 from laptop_llm.architectures.moe import SparseMoE
+from laptop_llm.architectures.residual import AttentionResidual, ManifoldConnection
 from laptop_llm.architectures.sparse import sparse_attention
 from laptop_llm.config import ModelConfig
 
-KVCache = tuple[torch.Tensor, torch.Tensor]
+KVCache = tuple[torch.Tensor, torch.Tensor] | DeltaCache | IndexedCache
 
 
 @dataclass
@@ -25,6 +30,7 @@ class ModelOutput:
     past_key_values: list[KVCache] | None = None
     hidden_states: torch.Tensor | None = None
     auxiliary_loss: torch.Tensor | None = None
+    mtp_loss: torch.Tensor | None = None
 
 
 class RMSNorm(nn.Module):
@@ -86,6 +92,10 @@ class GroupedQueryAttention(nn.Module):
         self.k_proj = nn.Linear(config.dim, config.n_kv_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(config.dim, config.n_kv_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(config.n_heads * self.head_dim, config.dim, bias=False)
+        self.indexer = BlockIndexer(config) if config.attention_pattern == "indexed" else None
+        self.gate_proj = (
+            nn.Linear(config.dim, config.dim, bias=False) if config.gated_attention else None
+        )
 
     def forward(
         self,
@@ -107,7 +117,11 @@ class GroupedQueryAttention(nn.Module):
 
         past_len = 0
         if past_key_value is not None:
-            past_k, past_v = past_key_value
+            past_k, past_v = (
+                (past_key_value.keys, past_key_value.values)
+                if isinstance(past_key_value, IndexedCache)
+                else past_key_value
+            )
             past_len = past_k.size(2)
             k = torch.cat((past_k, k), dim=2)
             v = torch.cat((past_v, v), dim=2)
@@ -122,6 +136,18 @@ class GroupedQueryAttention(nn.Module):
         else:
             k_for_attn, v_for_attn = k, v
 
+        if self.indexer is not None:
+            y, indexed_present, loss = self.indexer(
+                x, q, k_for_attn, v_for_attn, past_key_value, attention_mask, use_cache, past_len
+            )
+            y = y.transpose(1, 2).contiguous().view(batch, query_len, -1)
+            if self.gate_proj is not None:
+                y = y * self.gate_proj(x).sigmoid()
+            # 用原始压缩 KV，而不是保存 repeat_interleave 后的大 storage。
+            if indexed_present is not None:
+                indexed_present.keys, indexed_present.values = k, v
+            return self.o_proj(y), indexed_present, loss
+
         if self.config.attention_pattern == "sliding":
             y = sparse_attention(
                 q,
@@ -133,7 +159,10 @@ class GroupedQueryAttention(nn.Module):
                 padding_mask=attention_mask,
                 dropout=self.dropout if self.training else 0.0,
             )
-            return self.o_proj(y.transpose(1, 2).contiguous().view(batch, query_len, -1)), present
+            y = y.transpose(1, 2).contiguous().view(batch, query_len, -1)
+            if self.gate_proj is not None:
+                y = y * self.gate_proj(x).sigmoid()
+            return self.o_proj(y), present
 
         key_len = k_for_attn.size(2)
         attn_mask: torch.Tensor | None = None
@@ -161,6 +190,8 @@ class GroupedQueryAttention(nn.Module):
             is_causal=is_causal,
         )
         y = y.transpose(1, 2).contiguous().view(batch, query_len, -1)
+        if self.gate_proj is not None:
+            y = y * self.gate_proj(x).sigmoid()
         return self.o_proj(y), present
 
 
@@ -188,10 +219,27 @@ class TransformerBlock(nn.Module):
         self.attn = (
             LatentAttention(config)
             if config.attention_type == "mla"
+            else DeltaAttention(config)
+            if config.attention_type == "kda"
             else GroupedQueryAttention(config)
         )
         self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
         self.ffn = SparseMoE(config, SwiGLU) if config.num_experts else SwiGLU(config)
+        if config.residual_type == "attnres":
+            self.attn_mixer = AttentionResidual(config.dim, config.norm_eps)
+            self.ffn_mixer = AttentionResidual(config.dim, config.norm_eps)
+        if config.residual_type == "mhc":
+            self.hc = ManifoldConnection(config.dim, config.hc_streams, config.sinkhorn_iterations)
+
+    def attend(self, x, cos, sin, **kwargs):
+        result = self.attn(self.attn_norm(x), cos, sin, **kwargs)
+        return (*result, x.new_zeros(())) if len(result) == 2 else result
+
+    def feed_forward(self, x, attention_mask=None):
+        if isinstance(self.ffn, SparseMoE):
+            valid = None if attention_mask is None else attention_mask[:, -x.size(1) :]
+            return self.ffn(self.ffn_norm(x), valid)
+        return self.ffn(self.ffn_norm(x)), x.new_zeros(())
 
     def forward(
         self,
@@ -203,8 +251,8 @@ class TransformerBlock(nn.Module):
         past_key_value: KVCache | None = None,
         use_cache: bool = False,
     ) -> tuple[torch.Tensor, KVCache | None, torch.Tensor]:
-        attn_out, present = self.attn(
-            self.attn_norm(x),
+        attn_out, present, auxiliary = self.attend(
+            x,
             cos,
             sin,
             attention_mask=attention_mask,
@@ -212,14 +260,9 @@ class TransformerBlock(nn.Module):
             use_cache=use_cache,
         )
         x = x + attn_out
-        auxiliary = x.new_zeros(())
-        if isinstance(self.ffn, SparseMoE):
-            valid = None if attention_mask is None else attention_mask[:, -x.size(1) :]
-            update, auxiliary = self.ffn(self.ffn_norm(x), valid)
-        else:
-            update = self.ffn(self.ffn_norm(x))
+        update, ffn_auxiliary = self.feed_forward(x, attention_mask)
         x = x + update
-        return x, present, auxiliary
+        return x, present, auxiliary + ffn_auxiliary
 
 
 class LaptopLLM(nn.Module):
@@ -237,17 +280,21 @@ class LaptopLLM(nn.Module):
         self.token_embedding = nn.Embedding(config.vocab_size, config.dim)
         self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList(
-            [
-                TransformerBlock(
-                    replace(config, attention_pattern="dense")
-                    if config.dense_every and (index + 1) % config.dense_every == 0
-                    else config
-                )
-                for index in range(config.n_layers)
-            ]
+            [TransformerBlock(self.layer_config(config, index)) for index in range(config.n_layers)]
         )
         self.norm = RMSNorm(config.dim, config.norm_eps)
         self.lm_head = nn.Linear(config.dim, config.vocab_size, bias=False)
+        self.memory = (
+            NgramMemory(
+                config.dim, config.engram_table_size, config.engram_dim, config.engram_max_order
+            )
+            if config.engram_table_size
+            else None
+        )
+        self.final_mixer = (
+            AttentionResidual(config.dim) if config.residual_type == "attnres" else None
+        )
+        self.mtp = nn.ModuleList([MultiTokenHead(config) for _ in range(config.mtp_depth)])
         if config.tie_embeddings:
             self.lm_head.weight = self.token_embedding.weight
 
@@ -266,6 +313,23 @@ class LaptopLLM(nn.Module):
                     nn.init.normal_(module.down_proj.weight, mean=0.0, std=residual_std)
 
     @staticmethod
+    def layer_config(config, index):
+        if config.attention_type == "hybrid":
+            global_layer = (
+                index + 1
+            ) % config.hybrid_global_every == 0 or index == config.n_layers - 1
+            return replace(
+                config,
+                attention_type="mla" if global_layer else "kda",
+                mla_nope=True,
+                gated_attention=True,
+                qk_norm=False,
+            )
+        if config.dense_every and (index + 1) % config.dense_every == 0:
+            return replace(config, attention_pattern="dense")
+        return config
+
+    @staticmethod
     def _init_weights(module: nn.Module) -> None:
         if isinstance(module, (nn.Linear, nn.Embedding)):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
@@ -276,11 +340,22 @@ class LaptopLLM(nn.Module):
         self.gradient_checkpointing = enabled
 
     def num_parameters(self, *, trainable_only: bool = False) -> int:
-        return sum(
+        count = sum(
             parameter.numel()
             for parameter in self.parameters()
             if not trainable_only or parameter.requires_grad
         )
+        if not trainable_only:
+            from laptop_llm.quantization import PackedLinear
+
+            # 推理把权重换成 buffer，但架构参数数目并未缩小。编码字节与
+            # 逻辑参数是两种指标，不能在 UI 中把 FP4 宣传成“更小的网络”。
+            count += sum(
+                math.prod(module.shape) + (0 if module.bias is None else module.bias.numel())
+                for module in self.modules()
+                if isinstance(module, PackedLinear)
+            )
+        return count
 
     def forward(
         self,
@@ -290,6 +365,7 @@ class LaptopLLM(nn.Module):
         attention_mask: torch.Tensor | None = None,
         past_key_values: list[KVCache] | None = None,
         use_cache: bool = False,
+        inputs_embeds: torch.Tensor | None = None,
     ) -> ModelOutput:
         if input_ids.ndim != 2:
             raise ValueError("input_ids 必须是 [batch, seq_len]")
@@ -298,7 +374,11 @@ class LaptopLLM(nn.Module):
             raise ValueError("batch 和序列长度必须非空")
         if past_key_values is not None and len(past_key_values) != len(self.layers):
             raise ValueError("past_key_values 的层数与模型不一致")
-        past_len = 0 if past_key_values is None else past_key_values[0][0].size(2)
+        past_len = 0 if past_key_values is None else cache_length(past_key_values[0])
+        if past_key_values is not None and any(
+            cache_length(item) != past_len for item in past_key_values
+        ):
+            raise ValueError("所有层的缓存必须覆盖同一前缀")
         if past_len + seq_len > self.config.max_seq_len:
             raise ValueError(
                 f"序列总长 {past_len + seq_len} 超过 max_seq_len={self.config.max_seq_len}"
@@ -306,14 +386,111 @@ class LaptopLLM(nn.Module):
         if labels is not None and use_cache:
             raise ValueError("训练 loss 与 use_cache 不应同时开启")
 
-        x = self.dropout(self.token_embedding(input_ids))
+        if inputs_embeds is not None and inputs_embeds.shape != (batch, seq_len, self.config.dim):
+            raise ValueError("inputs_embeds 必须为 [B,T,dim]")
+        if inputs_embeds is not None and (self.memory is not None or self.mtp):
+            raise ValueError("视觉前缀机制实验暂不组合 Engram/MTP；占位 ID 不是文本 token")
+        x = self.dropout(
+            self.token_embedding(input_ids) if inputs_embeds is None else inputs_embeds
+        )
+        token_history = None
+        if self.memory is not None:
+            memory_update, token_history = self.memory(
+                input_ids, x, getattr(past_key_values, "token_history", None), attention_mask
+            )
+            x = x + memory_update
         cos = self.rope_cos[past_len : past_len + seq_len]
         sin = self.rope_sin[past_len : past_len + seq_len]
         presents: list[KVCache] = []
         auxiliary = x.new_zeros(())
+        # AttnRes 的块状态属于深度轴，每次调用重新建立；不是 token cache。
+        completed, partial, partial_count = [x], None, 0
+
+        def sources():
+            return torch.stack(completed + ([] if partial is None else [partial]))
+
+        def append_source(update):
+            nonlocal partial, partial_count
+            size = self.config.attnres_block_size
+            if size == 0:
+                completed.append(update)
+            else:
+                partial = update if partial is None else partial + update
+                partial_count += 1
+                if partial_count == size:
+                    completed.append(partial)
+                    partial, partial_count = None, 0
+
+        if self.config.residual_type == "mhc":
+            x = x.unsqueeze(-2).expand(-1, -1, self.config.hc_streams, -1)
 
         for layer_index, layer in enumerate(self.layers):
             past = None if past_key_values is None else past_key_values[layer_index]
+            if self.gradient_checkpointing and self.training and use_cache:
+                raise ValueError("gradient checkpointing 训练时不能同时构建 cache")
+            if self.config.residual_type == "attnres":
+
+                def attn_forward(stack, _layer=layer):
+                    update, _, aux = _layer.attend(
+                        _layer.attn_mixer(stack),
+                        cos,
+                        sin,
+                        attention_mask=attention_mask,
+                        use_cache=False,
+                    )
+                    return update, aux
+
+                if self.gradient_checkpointing and self.training:
+                    attn_update, attn_aux = checkpoint(attn_forward, sources(), use_reentrant=False)
+                    present = None
+                else:
+                    attn_update, present, attn_aux = layer.attend(
+                        layer.attn_mixer(sources()),
+                        cos,
+                        sin,
+                        attention_mask=attention_mask,
+                        past_key_value=past,
+                        use_cache=use_cache,
+                    )
+                append_source(attn_update)
+
+                def ffn_forward(stack, _layer=layer):
+                    return _layer.feed_forward(_layer.ffn_mixer(stack), attention_mask)
+
+                if self.gradient_checkpointing and self.training:
+                    ffn_update, ffn_aux = checkpoint(ffn_forward, sources(), use_reentrant=False)
+                else:
+                    ffn_update, ffn_aux = ffn_forward(sources())
+                append_source(ffn_update)
+                auxiliary = auxiliary + (attn_aux + ffn_aux) / len(self.layers)
+                if present is not None:
+                    presents.append(present)
+                continue
+            if self.config.residual_type == "mhc":
+
+                def hc_forward(streams, _layer=layer):
+                    base, coefficients = _layer.hc.read(streams)
+                    result, _, aux = _layer(base, cos, sin, attention_mask=attention_mask)
+                    return _layer.hc.write(streams, result - base, coefficients), aux
+
+                if self.gradient_checkpointing and self.training:
+                    x, layer_auxiliary = checkpoint(hc_forward, x, use_reentrant=False)
+                    present = None
+                else:
+                    base, coefficients = layer.hc.read(x)
+                    result, present, layer_auxiliary = layer(
+                        base,
+                        cos,
+                        sin,
+                        attention_mask=attention_mask,
+                        past_key_value=past,
+                        use_cache=use_cache,
+                    )
+                    x = layer.hc.write(x, result - base, coefficients)
+                auxiliary = auxiliary + layer_auxiliary / len(self.layers)
+                if present is not None:
+                    presents.append(present)
+                continue
             if self.gradient_checkpointing and self.training:
                 if use_cache:
                     raise ValueError("gradient checkpointing 训练时不能同时构建 KV Cache")
@@ -342,9 +519,14 @@ class LaptopLLM(nn.Module):
             if present is not None:
                 presents.append(present)
 
+        if self.final_mixer is not None:
+            x = self.final_mixer(sources())
+        elif self.config.residual_type == "mhc":
+            x = x.mean(-2)
         hidden_states = self.norm(x)
         logits = self.lm_head(hidden_states)
         loss = None
+        mtp_loss = None
         if labels is not None:
             if labels.shape != (batch, seq_len):
                 raise ValueError("labels 必须与 input_ids 形状相同")
@@ -354,10 +536,64 @@ class LaptopLLM(nn.Module):
                 labels[:, 1:].contiguous().view(-1),
                 ignore_index=-100,
             )
+            if self.mtp and seq_len > 2:
+                # 第 k 个辅助模块看到 x_(t+k)，预测 x_(t+k+1)。标签必须再移一格。
+                mtp_hidden = hidden_states
+                losses = []
+                for depth, head in enumerate(self.mtp, start=1):
+                    if seq_len <= depth + 1:
+                        break
+                    mask = None if attention_mask is None else attention_mask[:, depth:]
+                    mtp_hidden = head(
+                        mtp_hidden[:, :-1],
+                        self.token_embedding(input_ids[:, depth:]),
+                        self.rope_cos[depth:seq_len],
+                        self.rope_sin[depth:seq_len],
+                        mask,
+                    )
+                    targets = labels[:, depth + 1 :]
+                    if bool((targets != -100).any()):
+                        losses.append(
+                            F.cross_entropy(
+                                self.lm_head(self.norm(mtp_hidden))[:, :-1].reshape(
+                                    -1, self.config.vocab_size
+                                ),
+                                targets.reshape(-1),
+                                ignore_index=-100,
+                            )
+                        )
+                mtp_loss = torch.stack(losses).mean() if losses else logits.sum() * 0
+                auxiliary = auxiliary + self.config.mtp_loss_coef * mtp_loss
         return ModelOutput(
             logits=logits,
             loss=loss,
-            past_key_values=presents or None,
+            past_key_values=CacheBundle(presents, token_history) if presents else None,
             hidden_states=hidden_states,
             auxiliary_loss=auxiliary,
+            mtp_loss=mtp_loss,
         )
+
+
+class MultiTokenHead(nn.Module):
+    """共享 embedding/LM head，辅助模块只持有融合投影与一个小 Transformer。"""
+
+    def __init__(self, config):
+        super().__init__()
+        self.hidden_norm = RMSNorm(config.dim)
+        self.embed_norm = RMSNorm(config.dim)
+        self.fuse = nn.Linear(2 * config.dim, config.dim, bias=False)
+        self.block = TransformerBlock(
+            replace(
+                config,
+                attention_type="gqa",
+                attention_pattern="dense",
+                residual_type="standard",
+                num_experts=0,
+                mtp_depth=0,
+                dense_every=0,
+            )
+        )
+
+    def forward(self, hidden, embedding, cos, sin, mask):
+        merged = self.fuse(torch.cat((self.hidden_norm(hidden), self.embed_norm(embedding)), -1))
+        return self.block(merged, cos, sin, attention_mask=mask)[0]

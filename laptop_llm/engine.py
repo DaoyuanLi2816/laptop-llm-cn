@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.optim import AdamW
+from torch.optim import AdamW, Optimizer
 from torch.utils.data import DataLoader, Dataset
 
 from laptop_llm.config import ExperimentConfig, ModelConfig, StageConfig
@@ -104,6 +104,8 @@ def run_stage(
     checkpoint_source = resume or init_from
     if checkpoint_source is not None:
         checkpoint_data = read_checkpoint(checkpoint_source, map_location="cpu")
+        if "quantization" in checkpoint_data:
+            raise ValueError("打包 FP4 checkpoint 是推理产物；训练请使用未量化权重")
         saved_config = ModelConfig(**checkpoint_data["model_config"])
         if saved_config.vocab_size != tokenizer.vocab_size:
             raise ValueError("checkpoint 的词表大小与当前 tokenizer 不一致")
@@ -329,7 +331,14 @@ def language_model_batch_loss(
     model: torch.nn.Module, batch: dict[str, torch.Tensor], *, include_auxiliary: bool = True
 ) -> torch.Tensor:
     if "next_token_labels" in batch:
-        output = model(batch["input_ids"])
+        # 数据集已右移 labels；主 CE 不再 shift。MTP 却需要“同位置标签”，
+        # 供第 k 个辅助头取 labels[t+k+1]。丢弃窗口外的最后一个目标，
+        # 不增加上下文长度，也不把主损失误移两次。
+        aligned_labels = torch.cat(
+            (torch.full_like(batch["input_ids"][:, :1], -100), batch["next_token_labels"][:, :-1]),
+            dim=1,
+        )
+        output = model(batch["input_ids"], labels=aligned_labels)
         return F.cross_entropy(
             output.logits.reshape(-1, output.logits.size(-1)),
             batch["next_token_labels"].reshape(-1),
@@ -439,7 +448,11 @@ def evaluate(
 
 def build_optimizer(
     model: LaptopLLM, config: StageConfig, device: torch.device | None = None
-) -> AdamW:
+) -> Optimizer:
+    if config.optimizer == "muon":
+        from laptop_llm.optim import HybridMuon
+
+        return HybridMuon(model, lr=config.learning_rate, weight_decay=config.weight_decay)
     decay, no_decay = [], []
     for parameter in model.parameters():
         (decay if parameter.ndim >= 2 else no_decay).append(parameter)
@@ -489,7 +502,7 @@ def save_checkpoint(
     path: str | Path,
     model: LaptopLLM,
     tokenizer: LLMTokenizer,
-    optimizer: AdamW,
+    optimizer: Optimizer,
     experiment: ExperimentConfig,
     stage: str,
     step: int,
@@ -535,10 +548,19 @@ def load_inference_bundle(
     data = read_checkpoint(checkpoint_path, map_location="cpu")
     tokenizer = LLMTokenizer.from_str(data["tokenizer_json"])
     model = LaptopLLM(ModelConfig(**data["model_config"]))
+    if "quantization" in data:
+        from laptop_llm.quantization import replace_linears
+
+        quantization = data["quantization"]
+        if quantization["format"] != "e2m1-fp32-scale":
+            raise ValueError("未知量化格式")
+        if dtype_name not in {"auto", "float32"}:
+            raise ValueError("教学 PackedLinear 后端使用 float32；不混入额外 scale 舍入")
+        replace_linears(model, quantization["block_size"], quantization["modules"])
     model.load_state_dict(data["model"])
     dtype = resolve_dtype(dtype_name, device)
     # CPU fp16 算子支持不完整；CUDA 推理则直接把权重转成目标 dtype，减少显存。
-    if device.type == "cuda" and dtype != torch.float32:
+    if device.type == "cuda" and dtype != torch.float32 and "quantization" not in data:
         model.to(device=device, dtype=dtype)
     else:
         model.to(device=device)

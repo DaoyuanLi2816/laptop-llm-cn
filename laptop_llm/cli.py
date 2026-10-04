@@ -70,6 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     inspect_parser = subparsers.add_parser("inspect", help="查看 checkpoint 结构与训练来源")
     inspect_parser.add_argument("--checkpoint", required=True)
+    quantize_parser = subparsers.add_parser("quantize", help="E2M1 FP4 打包，只用于本地推理")
+    quantize_parser.add_argument("--checkpoint", required=True)
+    quantize_parser.add_argument("--output", required=True)
+    quantize_parser.add_argument("--block-size", type=int, default=32)
+    speculate_parser = subparsers.add_parser("speculate", help="精确投机采样的可读参考路径")
+    speculate_parser.add_argument("--checkpoint", required=True)
+    speculate_parser.add_argument("--draft", required=True)
+    speculate_parser.add_argument("--prompt", required=True)
+    speculate_parser.add_argument("--device", default="cpu")
+    speculate_parser.add_argument("--max-new-tokens", type=int, default=32)
+    speculate_parser.add_argument("--draft-tokens", type=int, default=3)
+    speculate_parser.add_argument("--temperature", type=float, default=1.0)
     add_lab_parser(subparsers)
     return parser
 
@@ -77,6 +89,35 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     configure_console()
     args = build_parser().parse_args(argv)
+    if args.command == "quantize":
+        from laptop_llm.quantization import export_quantized
+
+        print(export_quantized(args.checkpoint, args.output, args.block_size))
+        return
+    if args.command == "speculate":
+        from laptop_llm.speculative import speculative_generate
+
+        target, tokenizer, _ = load_inference_bundle(
+            args.checkpoint, device_name=args.device, dtype_name="float32"
+        )
+        draft, draft_tokenizer, _ = load_inference_bundle(
+            args.draft, device_name=args.device, dtype_name="float32"
+        )
+        if tokenizer.to_str() != draft_tokenizer.to_str():
+            raise ValueError("投机解码必须使用逐字节相同的 tokenizer")
+        prompt = tokenizer.build_chat_prompt([{"role": "user", "content": args.prompt}])
+        ids, stats = speculative_generate(
+            target,
+            draft,
+            prompt,
+            args.max_new_tokens,
+            args.draft_tokens,
+            args.temperature,
+            {tokenizer.end_id, tokenizer.eos_id},
+        )
+        print(tokenizer.decode(ids))
+        print(json.dumps(vars(stats) | {"acceptance_rate": stats.acceptance_rate}))
+        return
     if args.command == "lab":
         run_lab(args)
         return

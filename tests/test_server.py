@@ -43,6 +43,11 @@ def test_health_and_openai_compatible_completion(tmp_path):
     health = client.get("/health")
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
+    assert health.json()["attention"] == "gqa/dense"
+    logo = client.get("/assets/logo.png")
+    assert logo.status_code == 200 and logo.headers["content-type"] == "image/png"
+    assert logo.content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert '/assets/logo.png' in client.get("/").text
 
     response = client.post(
         "/v1/chat/completions",
