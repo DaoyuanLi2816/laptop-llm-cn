@@ -1,5 +1,8 @@
 # 04｜MoE 与 LoRA：两种不同的参数效率
 
+本章问题：MoE 省激活计算，LoRA 省更新参数，两者为什么不能互换？
+实验入口：`python scripts/lesson_examples.py 04`。
+
 MoE 增加可用专家容量，每个 token 只用一部分；LoRA 冻结原模型，只训练低秩增量。
 一个讨论激活计算，一个讨论可训练参数，不能混为一谈。
 
@@ -52,3 +55,36 @@ laptop-llm lab lora --checkpoint artifacts/my-first-lab/sft/final.pt --data arti
 router 有有限、非零梯度；padding 不改变有效 token 的 auxiliary loss；
 LoRA 注入前后 logits 相同；更新只影响 adapter；合并前后 logits 相同。
 跨卡 Expert Parallel 还需要 all-to-all dispatch、负载均衡与通信重叠，这里留到系统章节。
+
+## 源码精读：谁被选中，谁收到梯度
+
+<!-- source: laptop_llm/architectures/moe.py::SparseMoE.forward -->
+
+`topk` 的整数索引没有普通梯度，但被选中的权重仍参与计算图。
+按专家取 token、执行 FFN、加权散回；一个 token 可分派给多个专家。
+router 的辅助项改善负载诊断，不保证最终任务质量。未被激活的专家仍占权重/optimizer 内存。
+
+LoRA 的更新是一个低秩矩阵，不是 token 路由：
+
+<!-- source: laptop_llm/architectures/lora.py::LoRALinear.forward -->
+<!-- source: laptop_llm/architectures/lora.py::LoRALinear.merged -->
+
+设输入维 8、输出维 6、rank=2，A 为 `[2,8]`，B 为 `[6,2]`。
+`BA` 才与 W 的 `[6,8]` 同形；不要写反乘法。零 B 保证初始化时函数不变，
+但第一步 B 能有梯度、A 的梯度可能为零，不应据此判定训练坏了。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_04 -->
+
+预期初始 LoRA 与 base 相同，改变 B 后合并前后仍相同；MoE router 获得梯度。
+完整导入可在 [实验脚本](../../scripts/lesson_examples.py)查看。
+
+## 小结与练习
+
+小结：可训练参数、总参数、每 token 激活参数与通信量是四个不同的量。
+
+1. 为什么 LoRA checkpoint 更小，不代表原始模型推理内存同样下降？
+2. 把所有 token 指向同一专家，任务 CE 与负载辅助项分别可能怎样变化？
+
+答案提示：推理仍需要 base W；CE 不直接保证专家负载均匀，应同时记录路由分布。

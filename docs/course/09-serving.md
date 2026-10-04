@@ -1,5 +1,8 @@
 # 09｜推理、网页与生产服务的距离
 
+本章问题：同一个模型怎样连续生成，又怎样变成 HTTP 服务？
+实验入口：`python scripts/lesson_examples.py 09`。
+
 ## 本地可用路径
 
 ```bash
@@ -63,3 +66,36 @@ FP16 推理也不能冒称 INT4。v0.3 提供独立的 E2M1/FP32-scale FP4 打�
 
 从 [SGLang](https://github.com/sgl-project/sglang) 读 scheduler/cache 与后端边界，再回来看
 这个单请求循环，就能指出缺了什么。目标是理解差距，而不是掩盖差距。
+
+## 源码精读：prefill 与 decode 的状态边界
+
+<!-- source: laptop_llm/generation.py::TokenGenerator.generate_tokens -->
+
+第一次输入整个 prompt；后续只输入新 token，并传前一次 cache。
+在每一步先采样、判停止符，再决定是否还需要下一次 forward。
+`max_new_tokens` 是输出预算，不能忘记与 prompt 一起受模型上下文长度约束。
+长 prompt、第一 token 延迟和连续 decode 延迟要分开量测。
+
+流式显示不是 continuous batching：
+
+<!-- source: laptop_llm/server.py::stream_completion -->
+
+这里将生成片段包装为 SSE，并以 `[DONE]` 结束。浏览器看到的 chunk 不是词表 token
+的强保证，UTF-8 解码可能需要累积；前端不能把模型返回文本当成可执行 HTML。
+串行服务的并发调度、鉴权与取消语义应在 [server.py](../../laptop_llm/server.py)继续追踪。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_09 -->
+
+预期两个解码分支都追加一个位置，公共 prefix 没被原地修改。
+保留原 cache 对象非常重要：多候选采样和投机拒绝都可能需要分叉或回退。
+
+## 小结与练习
+
+小结：网页只是交互层，cache 是模型状态，scheduler 是系统策略；SSE 不自动增加吞吐。
+
+1. 仅把监听地址改成 `0.0.0.0`，是否就获得安全、稳定的公网服务？
+2. 多轮聊天为什么会持续增长上下文，即使每次只输出 8 个 token？
+
+答案提示：还需网络入口、鉴权、TLS、限流等；历史用户和 assistant 消息都占 prompt 预算。

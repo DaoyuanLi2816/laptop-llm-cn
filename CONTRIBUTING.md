@@ -19,6 +19,7 @@ pytest
 3. 改动训练管线时运行 `laptop-llm pipeline --config configs/smoke.yaml`；
 4. 改动 KV Cache 时确认 cache parity 测试仍通过；
 5. 改动 API 时同时检查普通与流式响应。
+6. 改动文档时安装 `requirements-docs.txt`，运行 `python -m mkdocs build --strict` 和 `python scripts/check_docs.py --site site`；完整规范见[文档维护](docs/documentation.md)。
 
 ## 代码与文档风格
 

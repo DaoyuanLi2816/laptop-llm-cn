@@ -1,5 +1,8 @@
 # 14｜Engram、MTP、Muon：三种不同的训练杠杆
 
+本章问题：知识存储、监督 horizon、优化方向各自改变哪一环？
+实验入口：`python scripts/lesson_examples.py 14`。
+
 前置：第 04 章 MoE，第 01 章标签偏移。源码：`engram.py`、`model.MultiTokenHead`、`optim.py`。
 分别讨论“存什么知识”“提供什么监督”“怎样移动参数”。它们不是同义的模型增大方案。
 
@@ -59,3 +62,40 @@ python -m pytest tests/test_frontier_objectives.py -k "muon or router"
 
 完成标准：证明预训练中 MTP 参数真有梯度；手算每个 label 的位置；重载 optimizer 后继续一步与未中断对照相同。
 参数变多、辅助 loss 下降、方向更正交，都不是独立能力提升证据。
+
+## 源码精读：先拆开三条计算图
+
+<!-- source: laptop_llm/architectures/engram.py::NgramMemory.forward -->
+
+Engram 从离散历史 token 得到有限表索引，embedding 表和上下文 gate 可训练。
+hash 冲突意味着不同 n-gram 可能共享槽位；表大小不是语言知识量的直接指标。
+decode 所需短历史跟随 CacheBundle，不能仅缓存神经 K/V 后把 n-gram 状态丢掉。
+
+MTP 的递归模块把 hidden 与未来已知输入 token 的 embedding 合并：
+
+<!-- source: laptop_llm/model.py::MultiTokenHead.forward -->
+
+训练时下一深度看到 `x_(t+k)`，目标是 `x_(t+k+1)`；主 CE 的右移与辅助目标的偏移要分别检查。
+共享 embedding/head 不表示可以在推理时直接把真实未来 token 喂给模型。
+本地没有将 MTP 头接成生产 drafter。
+
+Muon 在矩阵方向上近似正交化：
+
+<!-- source: laptop_llm/optim.py::orthogonalize -->
+
+用 float32 做 Newton–Schulz，多步近似不等于精确 SVD；矩阵形状影响归一化。
+embedding、router 等使用 AdamW 回退，比较实验必须记录参数分组，而不只写 optimizer 名字。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_14 -->
+
+预期 MTP 参数真有梯度，optimizer 同时包含 muon/adamw 两组，重载后保留非空状态。
+这不是 RNG/sampler 的完整中断重放测试，见 [08 系统](08-systems.md)。
+
+## 小结与练习
+
+1. 将 `mtp_loss_coef=0`，主 CE 还会训练辅助 MTP 参数吗？
+2. 为何把模型权重保存下来，却忘掉 Muon momentum，不算连续相同优化过程？
+
+答案提示：主 CE 不经过这些辅助模块；下一步方向依赖历史 momentum。

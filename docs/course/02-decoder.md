@@ -1,5 +1,8 @@
 # 02｜现代 Decoder 的一层
 
+本章问题：保持 `[B,T,D]` 不变的一层，内部到底做了哪些变换？
+前置：[01 数据](01-foundations.md)。实验入口：`python scripts/lesson_examples.py 02`。
+
 约定 B=batch、T=序列长、D=残差维度、H=Query 头数、K=KV 头数、d=D/H。
 `input_ids [B,T] → Embedding → hidden [B,T,D]`，残差块的输入输出维度不变。
 
@@ -50,3 +53,44 @@ MoE 辅助 loss 作为返回值穿过重算边界，不依赖模块可变字段�
 
 练习：dim=32、H=4、K=2，手画所有投影 shape。运行 `tests/test_model.py`，
 故意写错 RoPE 偏移，预期 cache 测试失败；只检查输出 shape 无法发现这个错误。
+
+## 源码精读：先读一层，不要先追完整 CLI
+
+打开 [model.py](../../laptop_llm/model.py)，从这个小函数进入主干：
+
+<!-- source: laptop_llm/model.py::TransformerBlock.forward -->
+
+`attend` 返回分支输出、cache、索引辅助项，第一次残差相加保持 hidden 形状；
+`feed_forward` 返回 FFN/MoE 输出和路由辅助项，第二次相加同样保持 `[B,T,D]`。
+辅助项作为返回值传出，重算时不依赖模块中容易过期的可变统计字段。
+
+再读 RMSNorm：
+
+<!-- source: laptop_llm/model.py::RMSNorm.forward -->
+
+只沿最后的 D 轴求均方，batch 与时间位置不会混合。`float()` 为敏感统计量保留精度，
+`to(x.dtype)` 再回到激活类型。若错把 mean 的轴写成时间轴，会引入未来信息，shape 却可能仍正确。
+
+| 张量 | dim=32、H=4、K=2 时 | 它的含义 |
+|---|---|---|
+| hidden | `[B,T,32]` | 每位置残差向量 |
+| Q | `[B,4,T,8]` | 四个查询头 |
+| 原始 K/V | `[B,2,T,8]` | 每两个 Q 头共享一组 KV |
+| logits | `[B,T,64]` | 实验词表的未归一化分数 |
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_02 -->
+
+预期 `logits_shape=[2,7,64]`，loss 有限，首层 Q 投影有梯度。
+这证明维度与基本计算图连通，不证明学到了语言。
+
+## 小结与练习
+
+小结：残差维度固定，不代表中间投影维度固定；归一化和门控都有特定的轴。
+
+1. 将 `tie_embeddings=False`，预测独立参数量和 logits shape 各有什么变化。
+2. 为什么只运行 `model.eval()` 仍能得到梯度？
+
+答案提示：解除共享增加词表矩阵，但不改变输出维度；eval 控制模块行为，不关闭 autograd。
+下一章检查 [Attention 与 cache](03-attention.md)。

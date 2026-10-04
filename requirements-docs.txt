@@ -1,0 +1,3 @@
+# 文档构建独立于训练依赖；固定版本避免主题更新改变 Markdown 渲染。
+mkdocs==1.6.1
+mkdocs-material==9.7.7

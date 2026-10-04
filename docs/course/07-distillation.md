@@ -1,5 +1,8 @@
 # 07｜On-policy Distillation：在学生会走到的状态上教
 
+本章问题：教师的概率分布怎样教学生，又为什么要让学生自己采样前缀？
+实验入口：`python scripts/lesson_examples.py 07`。
+
 传统序列蒸馏可以先让教师生成一批文本，再像 SFT 一样训练学生。
 问题是部署时学生会走到自己生成的前缀，和教师轨迹的数据分布不同。
 在线蒸馏让学生当前 policy 生成回答，再请教师评价这些前缀上的下一 token 分布。
@@ -52,3 +55,32 @@ laptop-llm lab opd --checkpoint artifacts/my-first-lab/pretrain/final.pt --teach
 
 练习：用 `torch.distributions.Categorical` 的 KL 做 oracle；检查 teacher.grad 为 None，
 mask 外 student logits 梯度为0。再对比固定教师轨迹与每步学生 rollout，保持题目和 token 总预算一致。
+
+## 源码精读：KL 方向与梯度方向是两件事
+
+<!-- source: laptop_llm/posttraining/objectives.py::distillation_loss -->
+
+`student_logits[B,T,V]` 与 teacher 必须对应同一 token 语义。
+reverse 分支用 student 概率加权 `log p_student-log p_teacher`；forward 分支换成 teacher 加权。
+教师无论哪种方向都 detach，不能因为选了 reverse 就让 teacher 也优化。
+温度改变分布，T² 改变梯度量级；不是把生成温度和损失温度默认视作同一概念。
+
+本实验只验证损失函数的梯度契约。完整 on-policy 性质还依赖采样发生在当前 student，
+轨迹随后固定，并及时更新 policy version；一个纯 KL 函数本身不能保证数据是 on-policy。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_07 -->
+
+预期 teacher.grad 为 None，mask 外 student 梯度为零，有效回答位置有梯度。
+这里输出的维数 V=5 是玩具概率实验，不是实际 tokenizer 的词表。
+
+## 小结与练习
+
+小结：蒸馏需要同时审计采样状态、分布支持集、目标公式和教师质量。
+
+1. `teacher_logits.detach()` 删除后，会影响哪一条计算图？
+2. 师生词表 ID 次序不同但 shape 相同，会不会被 shape 检查发现？
+
+答案提示：teacher 会被反向更新；shape 检查发现不了词表意义错位。
+多教师与域路由留到 [15 MOPD](15-mopd.md)。

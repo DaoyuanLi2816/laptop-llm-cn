@@ -1,5 +1,8 @@
 # 03｜GQA、Sparse Attention 与 MLA
 
+本章问题：少算一些位置与少存一些历史，是不是同一件事？
+前置：[02 Decoder](02-decoder.md)。实验入口：`python scripts/lesson_examples.py 03`。
+
 它们解决的是不同问题：GQA 共享头；稀疏 attention 减少可见边；MLA 压缩缓存表示。
 不要把 FlashAttention 当作稀疏 attention：前者可以精确计算 dense attention，只是改变内存访问方式。
 
@@ -64,3 +67,38 @@ laptop-llm pipeline --config configs/research_mla.yaml --device cpu
 先证等价，再测性能。将 window 设为大于序列长且 sinks=0，预期 sparse 与 dense causal 相同。
 再把窗口缩小，预期完整序列 logits 与 dense 不同，但该 sparse 模型自己的 cache 仍应等价。
 这是“改变架构”与“加速同一函数”的区别。
+
+## 源码精读：可见集合先于 attention 权重
+
+打开 [sparse.py](../../laptop_llm/architectures/sparse.py)，按“绝对 query 位置 → 允许 key → gather → softmax”读：
+
+<!-- source: laptop_llm/architectures/sparse.py::sparse_attention -->
+
+这里真实 gather 选中的 K/V；不是先算完整 T×T 分数再把大部分清零。
+但 index 张量、重复头与 Python 循环本身也要成本，理论 FLOPs 不是实测吞吐。
+有 past 时 query 的绝对位置必须加偏移；不能仅按本次输入长度判断因果性。
+
+MLA 关注另一条轴：存 latent 再通过权重吸收计算输出。
+
+<!-- source: laptop_llm/architectures/mla.py::LatentAttention.forward -->
+
+重点标出 cache 里的 latent 与 RoPE 部分，和临时生成的主分支 K/V。
+缓存省了哪些维度，应从驻留张量计算，而不是数 state_dict 的键。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_03 -->
+
+先完整计算 9 个 token，再分别计算前 4 个与后 5 个；预期 cache 等价。
+本例两层 FP32 GQA 保存 K、V，各为 `[1,2,9,8]`，合计 `2×2×1×2×9×8×4=2304` bytes。
+这不包含权重、临时 attention workspace 或 allocator。
+
+## 小结与练习
+
+小结：稀疏性改变可见或计算集合，GQA 改共享头数，MLA 改缓存表示；三个维度不要混成一个指标。
+
+1. 将 Query 头数翻倍但 KV 头数和每头维度不变，cache 会翻倍吗？
+2. 用完整前向和逐 token decode 比较，哪个测试能发现位置偏移错误？
+
+答案提示：GQA cache 按 KV 头数计，不按 Q 头数计；第二个对照直接检测偏移。
+带着参数与计算的区别进入 [04 MoE/LoRA](04-experts-adapters.md)。

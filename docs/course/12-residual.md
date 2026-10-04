@@ -1,5 +1,8 @@
 # 12｜AttnRes 与 mHC：信息怎样穿过深度
 
+本章问题：注意力能否沿网络深度选择信息，而不只沿 token 时间轴？
+实验入口：`python scripts/lesson_examples.py 12`。
+
 前置：第 02 章 residual、softmax。源码：`architectures/residual.py` 与 `model.py`。
 KDA/MSA 改的是时间轴；这里改的是**深度/残差流轴**。不应把它们都画成 token attention。
 
@@ -53,3 +56,35 @@ laptop-llm pipeline --config configs/frontier_mhc.yaml --device cpu
 
 代价：full AttnRes 存更多深度来源，mHC 存更多残差流；本地仍有许多小算子和矩阵展开。
 优化需要融合、分布式激活管理和实测，不能把数学稳定性等同于速度提升。
+
+## 源码精读：softmax 的轴决定你写的是哪种机制
+
+<!-- source: laptop_llm/architectures/residual.py::AttentionResidual.forward -->
+
+输入 sources 为 `[S,B,T,D]`，S 是深度来源数量。keys 归一化，values 保留原幅值，
+query 与 keys 内积得到 `[S,B,T]`，`softmax(0)` 对来源归一化。
+如果写成 `softmax(-1)`，就变成在时间位置之间混合，不再是本章的 depth attention。
+初始零 query 让来源权重均匀，因此得到 mean，不是 sum。
+
+mHC 对多残差流的混合使用近似双随机矩阵：
+
+<!-- source: laptop_llm/architectures/residual.py::sinkhorn -->
+<!-- source: laptop_llm/architectures/residual.py::ManifoldConnection.write -->
+
+Sinkhorn 在 log 域交替归一化行和列；有限迭代只有近似约束。
+write 先用 B 混合旧流，再通过 C 写入块更新。B 的约束不能自动约束非线性 F 或 C。
+本地 F 包括整个 block，并非上游逐子层或 SinglePass 布局。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_12 -->
+
+预期初始 AttnRes 等于来源 mean；50 次迭代后的矩阵非负、行列和约为 1。
+`whole_network_nonexpansive=not_proved` 提醒你不要把局部矩阵性质扩大到整个网络。
+
+## 小结与练习
+
+1. 将 sources 的所有值乘 2，归一化 keys 与输出 values 分别如何变化？
+2. 把 Sinkhorn 迭代数从 50 改成 1，哪个误差可能增大？
+
+答案提示：忽略 eps 时 keys 大致不变而输出幅值翻倍；有限轮次的行列归一化误差可能增大。

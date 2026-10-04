@@ -1,0 +1,93 @@
+site_name: LaptopLLM-CN · 动手读懂前沿 LLM
+site_description: 中文 LLM 代码教材：概念、真实源码、CPU 实验与研究自检
+site_url: https://daoyuanli2816.github.io/laptop-llm-cn/
+repo_url: https://github.com/DaoyuanLi2816/laptop-llm-cn
+repo_name: DaoyuanLi2816/laptop-llm-cn
+edit_uri: edit/main/docs/
+theme:
+  name: material
+  language: zh
+  font: false
+  logo: assets/logo.png
+  favicon: assets/logo.png
+  palette:
+    - scheme: default
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: 切换到深色模式
+    - scheme: slate
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: 切换到浅色模式
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.footer
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+    - search.suggest
+plugins:
+  - search:
+      lang: [zh, en]
+hooks:
+  - scripts/docs_support.py
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: source-line
+  - pymdownx.superfences
+extra_css:
+  - assets/stylesheets/book.css
+nav:
+  - 开始阅读:
+      - 首页: index.md
+      - 安装与第一次实验: getting-started.md
+      - 怎样配着源码读: reading-guide.md
+      - 从 tiny_LLM.py 迁移: from-tiny.md
+  - 第一篇 · 建立基础:
+      - 课程总览: course/README.md
+      - 01 数据、token 与预训练: course/01-foundations.md
+      - 02 现代 Decoder: course/02-decoder.md
+      - 03 Attention 与缓存: course/03-attention.md
+      - 04 MoE 与 LoRA: course/04-experts-adapters.md
+  - 第二篇 · 后训练:
+      - 05 SFT、CoT 与偏好: course/05-alignment.md
+      - 06 PPO、GAE 与 GRPO: course/06-reinforcement.md
+      - 07 在线蒸馏: course/07-distillation.md
+  - 第三篇 · 工程与研究:
+      - 08 系统与训练工程: course/08-systems.md
+      - 09 推理与服务: course/09-serving.md
+      - 10 实验与研究习惯: course/10-research.md
+  - 第四篇 · 前沿架构:
+      - 11 KDA 与混合状态: course/11-delta.md
+      - 12 AttnRes 与 mHC: course/12-residual.md
+      - 13 可学习稀疏索引: course/13-indexing.md
+      - 14 Engram、MTP 与 Muon: course/14-training.md
+  - 第五篇 · 前沿后训练与部署:
+      - 15 多教师在线蒸馏: course/15-mopd.md
+      - 16 Agent RL 与一致性: course/16-agent-rl.md
+      - 17 低精度、投机与多模态: course/17-deployment.md
+      - 18 行为审计与可信评测: course/18-auditing.md
+  - 实验与参考:
+      - Frontier Lab: frontier-lab.md
+      - 源码地图: source-map.md
+      - 术语与符号: glossary.md
+      - 常见问题: troubleshooting.md
+      - 验证与负结果: validation.md
+      - 论文台账: frontier-papers.md
+      - 参考实现: references.md
+      - Logo: branding.md
+      - 文档维护: documentation.md
+copyright: LaptopLLM-CN · 中文代码教材 · MIT

@@ -1,5 +1,8 @@
 # 06｜从 token 到 PPO / GRPO 更新
 
+本章问题：一个最终奖励如何影响回答中的每个 token？
+实验入口：`python scripts/lesson_examples.py 06`，先手算，再运行。
+
 本章最值得配着 debugger 看。先读 `rollout.py`，再读 `objectives.py`，最后读 `trainer.py`。
 算法参考 [PPO 原论文](https://arxiv.org/abs/1707.06347) 与 [DeepSeekMath 的 GRPO](https://arxiv.org/abs/2402.03300)；
 工程阅读映射在[源码索引](../references.md)。
@@ -96,3 +99,38 @@ python scripts/lab_smoke.py --output artifacts/rl-course --device cpu
 验收不仅看 final.pt：检查 old log-ratio 第一次更新接近0、冻结参数不变、critic 有更新、
 prompt/pad 梯度不进策略目标、零奖励 dense GRPO 不产生伪更新。MoE 辅助项是另一个梯度来源。
 这些测试通过仍不等于有用的 RL 收益；收益需要独立持出集和多个随机种子。
+
+## 源码精读：三个短函数决定目标语义
+
+<!-- source: laptop_llm/posttraining/objectives.py::generalized_advantage -->
+
+从最后位置倒序，`terminal` 控制是否 bootstrap，`mask` 控制该位置是否为动作。
+两者不能合成一个布尔变量。先看单步 delta，再看 carry；padding 必须重置 carry。
+
+<!-- source: laptop_llm/posttraining/objectives.py::clipped_policy_loss -->
+
+`old_logp.detach()` 和 `advantages.detach()` 定义本次固定批次的数据；
+`minimum` 按优势正负选保守目标，最后先每条回答平均再对回答平均。
+不能在重用这一批数据时把 old 改成更新后的 policy，否则 ratio 永远接近 1。
+
+<!-- source: laptop_llm/posttraining/objectives.py::group_advantages -->
+
+GRPO 的组是同一个问题的多条回答，而不是随意相邻的样本。
+population std 与 sample std 不同；零方差 clamp 防止 NaN，但没有凭空创造正优势。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_06 -->
+
+预期真正 EOS 时 returns 为 `[1,1]`；仅长度截断时为约 `[1.5,1.5]`。
+正优势动作的 new_logp 梯度为负；全零奖励组的优势精确为零。
+
+## 小结与练习
+
+小结：奖励、优势、logp 与 logits 是不同张量；old 和 reference 承担不同冻结角色。
+
+1. 把最后一个 `terminal=True` 改成 False，解释增加的 0.5 来自哪里。
+2. 两条回答长度不同，sequence mean 与全局 token mean 哪个会给长回答更大总权重？
+
+答案提示：0.5 来自下一状态的 value；全局 token mean 通常让长回答总权重更大。
+下一章用相同动作 mask 学习 [在线蒸馏](07-distillation.md)。

@@ -1,0 +1,13 @@
+/* 系统字体，不请求 Google Fonts；代码宽度不把手机页面整体撑开。 */
+:root { --md-text-font: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; }
+.md-grid { max-width: 1440px; }
+.md-typeset { line-height: 1.85; }
+.md-typeset h1 { color: var(--md-default-fg-color); font-weight: 700; }
+.md-typeset h2 { margin-top: 2.3em; font-weight: 600; }
+.md-typeset pre { line-height: 1.55; }
+.md-typeset img { max-width: 100%; height: auto; }
+.md-typeset .book-lead { font-size: 1.2em; color: var(--md-default-fg-color--light); }
+.book-paths { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+.book-card { border: 1px solid var(--md-default-fg-color--lightest); border-radius: .6rem; padding: 1rem; }
+.book-card h3 { margin-top: 0; }
+@media (max-width: 760px) { .book-paths { grid-template-columns: 1fr; } }

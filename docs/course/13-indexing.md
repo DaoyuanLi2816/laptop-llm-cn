@@ -1,5 +1,8 @@
 # 13｜学会选内容：MSA 与压缩共享是两条轴
 
+本章问题：主 CE 无法对整数索引求普通梯度，indexer 到底靠什么学习？
+实验入口：`python scripts/lesson_examples.py 13`。
+
 前置：第 03 章 sliding/gather、KL。源码：`indexed.py` 与独立实验 `compression.py`。
 固定滑窗知道“最近”；可学习 indexer 尝试找到“相关”。压缩/共享则改变保存多少、几层共用，不是同一个问题。
 
@@ -55,3 +58,36 @@ laptop-llm pipeline --config configs/frontier_indexed.yaml --device cpu
 
 实验任务：把 top-k 预算增到覆盖所有块，对照 dense oracle；只 backward index KL，验证主干 grad 为零/None。
 修改未来的 K **和** V，验证过去不变。分别量计算预算、KV 字节和跨层共享；不要把其中一项改善写成三项都改善。
+
+## 源码精读：两条分支，两种梯度来源
+
+<!-- source: laptop_llm/architectures/indexed.py::BlockIndexer.forward -->
+
+先标形状：组级 index Q 为 `[B,G,T,Di]`，共享 index K 为 `[B,S,Di]`；
+每个 query 的 scores 为 `[B,G,S]`，选块后主分支 gather 的 KV 为 `[B,H,Kblock*block_size,d]`。
+scores 扫描全前缀，主分支却只精确计算选中的内容，两条路径不要混为一个复杂度。
+
+按代码顺序复查四个边界：未来/padding 在 block max 前屏蔽；local 在预算内；
+同分稳定排序；teacher 概率与 backbone hidden detach。
+辅助 KL 教师来自同组主头的概率均值，若先平均 logits 再 softmax 会变成另一分布。
+
+共享机制可另外阅读，不必先接成完整 CED：
+
+<!-- source: laptop_llm/architectures/compression.py::layer_reuse -->
+
+Reuse 与 Reindex 复用同一个 memory 对象，而不是复制值相同的张量。
+生产系统还需明确源 encoder hidden、候选池与跨层生命周期，本地实验由调用方提供源 KV。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_13 -->
+
+预算覆盖全部块时，预期与 dense logits 相同。只 backward 索引 KL，embedding.grad 应为 None，
+index Q 有非零梯度；这直接验证了“哪个目标在训练谁”。
+
+## 小结与练习
+
+1. 在 block max 后才 mask，会在哪类输入上泄露未来？
+2. Reindex 与 Reuse 分别保留了什么状态，改变了什么计算？
+
+答案提示：同块未来的较大分数会改变历史选块；前者重新选 indices，后者连 indices 也共享。

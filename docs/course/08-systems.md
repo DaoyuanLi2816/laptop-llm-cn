@@ -1,5 +1,8 @@
 # 08｜工业系统不是只把参数调大
 
+本章问题：公式不变时，状态、通信和故障为什么会迫使系统设计改变？
+实验入口：`python scripts/lesson_examples.py 08`；完整 DDP 对照另外运行 `ddp_lesson.py`。
+
 一个公式正确的训练循环，是研究工程的起点。模型、数据、通信与故障尺度改变后，
 有些设计会发生结构变化。这里明确区分已运行实验与需要阅读的生产技术。
 
@@ -75,3 +78,32 @@ importance correction。观察 [verl](https://github.com/verl-project/verl) 的 
 
 练习：设计一个包含 data hash、policy version、sample seed 的 rollout schema；
 说明如何拒绝一批 tokenizer 已变化或 policy 版本过旧的轨迹。再写一份中断恢复故障注入计划。
+
+## 源码精读：checkpoint 保存了什么，没保存什么
+
+<!-- source: laptop_llm/engine.py::save_checkpoint -->
+
+从 payload 列表逐项反推恢复语义：模型配置决定结构，tokenizer 决定 ID，optimizer
+决定动量，step 决定调度位置，DPO reference 决定目标锚点。
+临时文件加 rename 避免半写权重；不保证 RNG、sampler、AMP scaler 和外部工具状态重放。
+文档中“能加载”和“精确继续相同轨迹”必须使用不同措辞。
+
+重算另一个契约：少保存激活、反向重做 forward，不能换掉这次使用的层与 mask。
+在 [model.py](../../laptop_llm/model.py)寻找 `checkpoint(custom_forward, ...)`，
+留意闭包默认参数 `_layer=layer`，避免反向时所有闭包指向最后一层。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_08 -->
+
+预期普通路径与 activation-checkpoint 路径的梯度相同。这个实验没有启动分布式任务，
+因此结果明确打印 `distributed_training=False`。DDP 的全局归一化要用另一份对照证明。
+
+## 小结与练习
+
+小结：一次更新不仅是 W，还包含 optimizer、数据位置、随机性与各角色版本。
+
+1. 只保存 MoE 激活的专家，能恢复完整模型吗？
+2. 一个 rank 有 2 个有效 token，另一个有 20 个，平均 rank mean 等于全局 mean 吗？
+
+答案提示：未激活专家仍是模型状态；两个 rank 的分母不同，需要全局统计和重新缩放。

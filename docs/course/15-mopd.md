@@ -1,5 +1,8 @@
 # 15｜多教师 OPD：在学生会遇到的前缀上教学
 
+本章问题：多位教师怎样被选择，蒸馏目标在哪个前缀上定义？
+实验入口：`python scripts/lesson_examples.py 15`。
+
 前置：第 07 章 KL、冻结教师。源码：`posttraining/trainer.py`、`objectives.py`。
 MOPD 不是“加载几个大模型再平均 logits”；前缀来源、教师选择、概率空间和梯度路径都必须明确。
 
@@ -55,3 +58,32 @@ python -m pytest tests/test_lab_integration.py -k mopd
 查看 `teacher_routes`、动作数量、objective loss，以及保存的学生文本。教师小/弱时蒸馏可能传递错误。
 full-vocab KL 的 logits 内存随 B×T×V 增长；规模化需要分片、top-k 近似或采样估计，不能直接把教学张量放大。
 毕业实验：固定学生、数据、生成预算，比较单教师、多教师、off-policy SFT；评估每个域与域外遗忘，而不只比较训练 KL。
+
+## 源码精读：路由要先确定，不要事后挑好看的教师
+
+<!-- source: laptop_llm/posttraining/trainer.py::teacher_key -->
+<!-- source: laptop_llm/posttraining/trainer.py::frozen_bundle -->
+
+teacher key 由数据的域与 effort 预算确定；模型载入后 eval 并关闭参数梯度。
+然后在 [trainer.py](../../laptop_llm/posttraining/trainer.py)的 `mopd` 分支追踪：
+从 student 采样 ids → 保存行为 logp/动作 mask → 按预定路由评估同一 ids → 计算 KL → 更新 student。
+teacher 不能重写学生已经采样的失败前缀，否则训练状态分布发生变化。
+
+所有教师 checkpoint 的 tokenizer JSON 必须与学生逐字节一致。
+本地目标是 full-vocabulary reverse KL，并非某篇上游报告的 sampled-token policy-gradient 目标。
+借鉴路由机制与逐项复现整个配方是两种不同承诺。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_15 -->
+
+预期固定选择 `math:max`，教师没有梯度，学生有梯度。
+本例是 toy logits 的路由/目标实验，不包含真实学生 rollout；完整链路由 Frontier Lab 验证。
+这层区分让你能先定位数学问题，再定位采样系统问题。
+
+## 小结与练习
+
+1. 某教师训练 KL 更低，能据此断定它对 held-out 更有效吗？
+2. 当 V 很大，保存两份 `[B,T,V]` 分布会增加什么成本？
+
+答案提示：低 KL 可能只说明它与学生更相似；全词表 logits 占大量激活内存，近似目标需重新证明语义。

@@ -1,5 +1,8 @@
 # 01｜数据、token 与预训练
 
+本章问题：一段文字怎样变成可反传的监督？读完应能区分 token、位置、目标与两个 mask。
+前置：整数索引、交叉熵。实验入口：`python scripts/lesson_examples.py 01`。
+
 ## 模型预测什么
 
 给定前缀 `x_0 ... x_t`，模型输出词表分布 `p(x_{t+1}|x_≤t)`。
@@ -56,3 +59,41 @@ demo 只检查 I/O。课程算术按问题切分；DPO 的内部 eval 不一定�
 而不是正文位置自己预测自己。
 
 再故意把所有 labels 设为 `-100`，解释为什么应在数据阶段拒绝样本，而不是继续接受 NaN loss。
+
+## 源码精读：同位置标签与右移目标
+
+先打开 [tokenizer.py](../../laptop_llm/tokenizer.py)，观察角色、正文和结束符分别怎样进入列表。
+这里 `labels` 与原始 ids 等长；角色标记不产生 loss，但 assistant 正文与结束符产生监督。
+
+<!-- source: laptop_llm/tokenizer.py::LLMTokenizer.build_sft_example -->
+
+逐步阅读：`segment` 定义消息的物理布局；`labels.extend` 决定监督范围；
+最后 `[:max_length]` 是截断边界。假如截断恰好删掉全部 assistant 标签，数据集必须拒绝该样本。
+不要把 `labels == -100` 转成不可见 attention mask，否则回答看不到用户问题。
+
+预训练数据已经提供下一位置目标，因此引擎走另一个 CE 分支：
+
+<!-- source: laptop_llm/engine.py::language_model_batch_loss -->
+
+读这个函数时先区分主 CE 与辅助 MTP：主 CE 使用 `next_token_labels`，
+辅助头使用重新对齐的同位置 labels。两个分支不能套一个“统一 shift”再移动一次。
+
+## 可运行小实验
+
+以下是 [lesson_01](../../scripts/lesson_examples.py) 的实际代码，toy IDs 不是实际中文 BPE：
+
+<!-- source: scripts/lesson_examples.py::lesson_01 -->
+
+预期输入为 `[1,11,12]`，目标为 `[11,12,2]`；loss mask 为 `[False,True,True]`。
+位置 0 的 logits 预测 ID 11，而不是重构 ID 1。这就是自回归训练与复制输入的区别。
+
+## 小结与练习
+
+小结：tokenizer 决定 ID 的意义，数据决定监督范围，CE 决定聚合方式。
+词表大小相同不意味着教师和学生能互换 token。
+
+1. 将第二个目标改成 `-100`，预测哪个 logits 行的梯度变零。
+2. 一个 microbatch 有 2 个有效 token，另一个有 20 个；两批 mean 再平均会给谁更大单 token 权重？
+
+答案提示：忽略目标的那一行不产生 CE 梯度；等权 microbatch 下短批中每个 token 的权重更大。
+不要据此修改 attention 可见性。继续阅读 [02 Decoder](02-decoder.md)。

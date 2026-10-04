@@ -1,5 +1,8 @@
 # 05｜SFT、CoT、DPO 与奖励模型
 
+本章问题：监督答案、排序偏好与验证奖励分别告诉模型什么？
+实验入口：`python scripts/lesson_examples.py 05`。
+
 ## 先区分四个层次
 
 | 名称 | 描述什么 | 本仓库如何演示 |
@@ -74,3 +77,37 @@ reward hacking：策略可能找到让 RM 高分的乱码、长度特征或模�
 手算：初始 policy=reference 时 margin=0，DPO task loss 应为 `log(2)`。
 把 chosen 的 log probability 增大，loss 应下降。reward loss 对 chosen 分数的梯度为负，
 梯度下降会把 chosen 分数往上推。测试检查方向，而不只是检查数值有限。
+
+## 源码精读：一个偏好对如何进入 DPO
+
+<!-- source: laptop_llm/engine.py::sequence_log_probabilities -->
+<!-- source: laptop_llm/engine.py::dpo_batch_loss -->
+
+先用回答标签确定 mask，再 gather 每个真实 token 的 log probability 并求和。
+这里是 sequence logp，不是每 token 平均；改变长度会改变其量级。
+DPO 的 margin 是 policy 的 chosen/rejected 差，减 reference 的同一差，再乘 beta。
+`no_grad` 冻结 reference；chosen/rejected 辅助项则仍可能训练 policy 的 router。
+
+初始 policy=reference 时 margin=0，CE 风格偏好 loss 为 `-log sigmoid(0)=log 2`。
+它不是“模型回答正确率 50%”的实测结果，只是二元排序目标的初始化值。
+
+奖励模型另外拟合 `sigmoid(r_chosen-r_rejected)`：
+
+<!-- source: laptop_llm/posttraining/objectives.py::preference_reward_loss -->
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_05 -->
+
+预期 chosen 的 loss 梯度为负、rejected 为正，DPO 初始化 loss 约 0.693147。
+梯度下降会提升 chosen 分数；不是给每个 chosen token 添加“奖励标签”。
+
+## 小结与练习
+
+小结：CoT 是可见数据/输出形式，DPO 是偏好目标，RLHF/RLVR 是奖励来源维度。
+
+1. 某个回答最终答案正确但解释错误，当前算术 verifier 能发现吗？
+2. 若只恢复 policy 却重新初始化 DPO reference，是同一次实验的继续吗？
+
+答案提示：本地最终答案 verifier 不检查每个 CoT 步骤；更换 reference 改变了目标。
+继续读 [06 策略优化](06-reinforcement.md)。

@@ -1,33 +1,53 @@
-<div align="center">
-
 <img src="laptop_llm/assets/logo-v3.png" width="180" alt="LaptopLLM-CN：书本、笔记本与神经路径" />
 
 # LaptopLLM-CN
 
 ### 把前沿论文，变成代码。
 
-**一台电脑 · 原生 PyTorch · 中文代码教材 · 从预训练到后训练，再到本地试聊**
+一台电脑 · 原生 PyTorch · 中文代码教材 · 从预训练到后训练，再到本地试聊
 
 [![CI](https://github.com/DaoyuanLi2816/laptop-llm-cn/actions/workflows/ci.yml/badge.svg)](https://github.com/DaoyuanLi2816/laptop-llm-cn/actions/workflows/ci.yml)
+[![Documentation](https://github.com/DaoyuanLi2816/laptop-llm-cn/actions/workflows/docs.yml/badge.svg)](https://github.com/DaoyuanLi2816/laptop-llm-cn/actions/workflows/docs.yml)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab)](pyproject.toml)
 [![License](https://img.shields.io/badge/License-MIT-19715b)](LICENSE)
 
-[开始实验](#十分钟内先认识完整流程) · [18 章中文课程](docs/course/README.md) · [前沿论文](docs/frontier-papers.md) · [实验室](docs/frontier-lab.md) · [验证记录](docs/validation.md)
-
-</div>
+[中文在线教材](https://daoyuanli2816.github.io/laptop-llm-cn/) · [开始实验](#十分钟内先认识完整流程) · [18 章课程](docs/course/README.md) · [前沿论文](docs/frontier-papers.md) · [验证记录](docs/validation.md)
 
 你知道 Transformer，却还没有真正写过一套 LLM 系统？
 
 这里不把 PPO 藏在一个 `trainer.train()` 里，也不把 MoE 当作配置文件里的缩写。
-我们从一个可以读完的 decoder 开始，把 **稀疏注意力、MLA、专家路由、rollout、奖励模型、PPO/GRPO、在线蒸馏、KV Cache** 拆成能运行、能手算、能测试的模块。最后用自己的 checkpoint 打开网页聊天。
+我们从一个可以读完的 decoder 开始，把稀疏注意力、MLA、专家路由、rollout、奖励模型、PPO/GRPO、在线蒸馏、KV Cache 拆成能运行、能手算、能测试的模块。最后用自己的 checkpoint 打开网页聊天。
 
-项目延续 `tiny_LLM.py` 的“代码即教材、中文讲透”风格。**v0.3 Frontier Lab** 将模型、后训练、推理和研究方法连成一套可测试的学习系统。阅读日期为 **2026-10-03**；依据官方论文与技术报告，而不是把热门缩写直接堆进配置。具体版本、阅读章节和未实现项见[论文台账](docs/frontier-papers.md)。不是任何上游模型的 checkpoint 兼容实现。
+项目延续 `tiny_LLM.py` 的“代码即教材、中文讲透”风格。v0.3 Frontier Lab 将模型、后训练、推理和研究方法连成一套可测试的学习系统。论文阅读日期为 2026-10-03；依据官方论文与技术报告，而不是把热门缩写直接堆进配置。具体版本、阅读章节和未实现项见[论文台账](docs/frontier-papers.md)。不是任何上游模型的 checkpoint 兼容实现。
 
 熟悉原文件的读者，可以先看[从 tiny_LLM.py 到新结构的迁移地图](docs/from-tiny.md)。
 
-> **定位要诚实。** 这是公开先进 LLM 技术的教学缩影，不是 OpenAI 内部仓库的复制品，也不保证读完即可胜任顶尖实验室的全部工作。工业系统的分布式通信、数据治理、容错、安全和性能工程会产生新的设计问题，绝不只是把参数放大。这里把这些差距也作为课程内容。
+> 定位要诚实：这是公开先进 LLM 技术的教学缩影，不是 OpenAI 内部仓库的复制品，也不保证读完即可胜任顶尖实验室的全部工作。工业系统的分布式通信、数据治理、容错、安全和性能工程会产生新的设计问题，绝不只是把参数放大。这里把这些差距也作为课程内容。
 
-## v0.3：沿着前沿技术的四条主线学习
+## 像读一本代码教材一样学习
+
+[在线中文教材](https://daoyuanli2816.github.io/laptop-llm-cn/) 提供章节目录、中文搜索、浅色/深色模式、手机阅读和可复制的源码。每章沿着同一条路线展开：
+
+1. 本章问题与前置知识：先知道要解决什么。
+2. 概念、张量形状与数据流：理解 mask、梯度和状态属于谁。
+3. 源码精读：构建时从真实 Python 函数提取代码，保留原始行号与固定提交链接。
+4. CPU 小实验：用断言和数值观察检查理解，不需要下载大模型。
+5. 小结、练习与答案提示：区分“跑通”与“已经证明”。
+
+```bash
+# 先看 label 与 mask，再看一次真正的 forward/backward
+python scripts/lesson_examples.py 01
+python scripts/lesson_examples.py 02
+
+# 18 章各有一个独立的、带断言的小实验
+python scripts/lesson_examples.py all
+```
+
+不想切换网站，也可以从 [GitHub 课程目录](docs/course/README.md) 阅读；安装步骤见[第一次实验](docs/getting-started.md)，按问题查代码见[源码地图](docs/source-map.md)。
+
+[![中文教材首页完整预览](docs/assets/book-home.jpg)](https://daoyuanli2816.github.io/laptop-llm-cn/)
+
+## v0.3：沿着前沿技术的五条主线学习
 
 | 主线 | 可运行的教学实现 | 论文对照与明确差距 |
 |---|---|---|
@@ -35,7 +55,7 @@
 | 改变信息如何跨层传播 | full/block AttnRes、动态 mHC＋Sinkhorn、Engram 短 n-gram 记忆 | Kimi K3、DeepSeek V4/V4.1；无 SinglePass mHC、主机预取 |
 | 更丰富的训练信号 | MTP、Muon/AdamW 混合优化；domain/effort 多教师 OPD；agent-GRPO、双侧校正、GAR、router 冻结 | GLM-5、MiMo V2.6、Kimi K3、Thinking Machines；单设备同步实现，非异步平台 |
 | 训练与部署一起考虑 | E2M1 FP4 真实 nibble 打包、STE 算子、精确投机采样、网页 SSE | Gemma 4、gpt-oss、MiMo；不是 MXFP4/NVFP4 格式，无加速 kernel |
-| 将“论文理解”变成可证伪实验 | CSA2 Full/Reindex/Reuse 共享代数实验、图像 patch 前缀 backward；held-out harness 与行为审计课程 | DeepSeek V4.1、Gemma 4、Anthropic CHIVE、OpenAI system cards；前两项**未接入主模型服务**，后两项为研究练习 |
+| 将“论文理解”变成可证伪实验 | CSA2 Full/Reindex/Reuse 共享代数实验、图像 patch 前缀 backward；held-out harness 与行为审计课程 | DeepSeek V4.1、Gemma 4、Anthropic CHIVE、OpenAI system cards；前两项未接入主模型服务，后两项为研究练习 |
 
 这些设计不是每个顶级模型的统一“标配”。`hybrid`、`indexed`、`mhc` 是三份可替换的实验配置；不要把互斥路线硬拼成一个“超级模型”。每个模块都配有中文解释、可测不变量和失败边界。
 
@@ -61,7 +81,7 @@ flowchart LR
     E --> API[KV Cache / SSE API / 本地网页]
 ```
 
-这些是**可选分支**，不是每个模型都必须依次经历的八道工序。GRPO 与 PPO 是不同优势估计路线；RLHF/RLVR 描述奖励来源；CoT 是数据与输出形式。先区分层次，才不会“技术越堆越先进”。
+这些是可选分支，不是每个模型都必须依次经历的八道工序。GRPO 与 PPO 是不同优势估计路线；RLHF/RLVR 描述奖励来源；CoT 是数据与输出形式。先区分层次，才不会“技术越堆越先进”。
 
 ## 十分钟内先认识完整流程
 
@@ -92,11 +112,13 @@ python scripts/frontier_smoke.py --output artifacts/my-frontier --device cpu
 laptop-llm serve --checkpoint artifacts/smoke/sft/final.pt --device cpu
 ```
 
-浏览器打开 **http://127.0.0.1:8000**；接口说明在 `/docs`。支持多轮历史、流式显示、温度/长度调节、清空对话、可选 API key。原始 `<think>` 文本可见，不伪装为内部思维。网页无 CDN、无前端构建和付费 API。
+浏览器打开 [本地聊天页面](http://127.0.0.1:8000)；接口说明在 `/docs`。支持多轮历史、流式显示、温度/长度调节、清空对话、可选 API key。原始 `<think>` 文本可见，不伪装为内部思维。网页无 CDN、无前端构建和付费 API。
 
-<img src="docs/assets/frontier-demo.jpg" width="420" alt="v0.3 本地网页实测：Logo、采样设置和模型信息" />
+![本地网页完整实测：模型信息、设置、对话区与发送控件](docs/assets/frontier-demo.jpg)
 
-**smoke 模型通常只输出随机文本。** 跑通说明工程链路成立，不说明模型聪明。算术实验也是有限任务，不是通用推理基准。请先读[验证记录与负结果](docs/validation.md)，再决定是否增加训练量。
+截图来自真实本地服务，包含对话区和底部输入控件；[手机窄屏截图](docs/assets/frontier-demo-mobile.jpg)。在线教材是静态网页，不是公共推理服务；聊天需在自己电脑上启动上述服务。
+
+smoke 模型通常只输出随机文本。跑通说明工程链路成立，不说明模型聪明。算术实验也是有限任务，不是通用推理基准。请先读[验证记录与负结果](docs/validation.md)，再决定是否增加训练量。
 
 ## 不是名词清单：每一项都有位置
 
@@ -148,8 +170,9 @@ laptop_llm/
   generation.py         # prefill、decode、采样
   server.py             # 本地网页＋HTTP/SSE
 configs/                # 基础三档＋frontier_hybrid / frontier_indexed / frontier_mhc
-scripts/                # 全流程 smoke、DDP 对照、数据导出
-docs/course/            # 从 tensor 到工业系统的中文课程
+scripts/                # 全流程 smoke、18 章原理实验、文档审计
+docs/course/            # 从 tensor 到工业系统的中文教材
+mkdocs.yml              # 中文文档站；AST 源码嵌入、搜索与导航
 tests/                  # 数值契约、训练更新、恢复、接口测试
 ```
 
@@ -190,6 +213,6 @@ python scripts/ddp_lesson.py
 
 ## 参与与致谢
 
-欢迎增加**带数值测试、中文推导和边界说明**的课程实现。新算法请先给出可区分于现有目标的实验，而不是只添一个参数名。
+欢迎增加带数值测试、中文推导和边界说明的课程实现。新算法请先给出可区分于现有目标的实验，而不是只添一个参数名。文档修改也有[构建与验收规范](docs/documentation.md)。
 
 感谢 Kimi、DeepSeek、Z.ai、Xiaomi MiMo、MiniMax、Google DeepMind、OpenAI、Anthropic、Thinking Machines 及公开训练/推理框架的研究工作。具体来源见[论文台账](docs/frontier-papers.md)与[源码索引](docs/references.md)。本项目代码 MIT；第三方资产遵守各自许可证。[Logo 设计与生成提示词](docs/branding.md)。

@@ -1,5 +1,8 @@
 # 17｜低精度、精确投机与多模态入口
 
+本章问题：权重字节、输出分布与输入模态如何分别验收？
+实验入口：`python scripts/lesson_examples.py 17`。
+
 前置：第 09 章推理、基础概率。源码：`quantization.py`、`speculative.py`、`multimodal.py`。
 部署三个独立问题：权重怎样存、输出怎样采样、输入怎样表达。下面三条路径各自有测试，不能互相替代能力证据。
 
@@ -59,3 +62,40 @@ python -m pytest tests/test_quantization_speculative.py tests/test_frontier_mech
 
 完成标准：手动拆一个 byte；证明拒绝修正分布守恒；检查图像标签不参与 CE，而 projector 梯度非零。
 然后分别做存储、延迟、能力实验，不用一个指标替所有问题作答。
+
+## 源码精读：从“低精度”到实际字节
+
+<!-- source: laptop_llm/quantization.py::pack_fp4 -->
+
+32 个元素共享一个 FP32 scale；每两个 4-bit code 放进一个 uint8。
+一个 16×16 FP32 矩阵原始占 1024 bytes，编码占 128 bytes，scale 占 32 bytes，合计 160。
+这是该单矩阵的存储账，不是整个模型 6.4× 压缩或峰值显存账。
+尾块补齐、共享高精度 embedding、临时反量化都会改变总体指标。
+
+拒绝后的概率分布：
+
+<!-- source: laptop_llm/speculative.py::correction_distribution -->
+
+先用正部，再归一化；不是从 p 重新抽一次。接受与拒绝分支合在一起才保持目标分布。
+分布相同不应进入拒绝分支，因此零分母是非法路径，不要随意加 epsilon 掩盖。
+
+视觉前缀的标签边界：
+
+<!-- source: laptop_llm/multimodal.py::VisionPrefixModel.forward -->
+
+prefix 的 labels 是 -100，但它们仍是可见输入，文字 CE 能训练 projector。
+dummy token IDs 只是接口占位，不能被 Engram 或 MTP 当成真实词序列。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_17 -->
+
+预期单矩阵打包为 160 bytes、修正分布为 `[1,0]`、图像前缀为 4 个位置，projector 有梯度。
+RMSE 的具体小数会受环境影响，不是语言能力保留指标。
+
+## 小结与练习
+
+1. PackedLinear 每次反量化整矩阵，为什么可能反而更慢？
+2. projector 有梯度是否等于它已经识别物体？
+
+答案提示：还有解码、内存读写和临时矩阵成本；梯度只证明计算图连通，知识需要训练和独立评测。

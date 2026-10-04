@@ -1,5 +1,8 @@
 # 16｜Agent RL：轨迹是动作与观察的交替，不是一串答案
 
+本章问题：模型动作、工具观察、版本与行为概率怎样共同组成训练样本？
+实验入口：`python scripts/lesson_examples.py 16`。
+
 前置：第 06 章 PPO/GRPO、old/reference。源码：`agent.py`、`frontier.py`、`trainer.py`。
 本地训练循环是**同步单设备**。双侧校正和版本 mask 是学习异步系统所需的数学单元，不是异步平台已经实现。
 
@@ -59,3 +62,39 @@ python -m pytest tests/test_frontier_objectives.py tests/test_lab_integration.py
 
 成功协议 oracle 只证明 mask/工具接口能工作，不是训练模型的能力。
 先用 protocol oracle 验证边界，再看随机初始化小模型的零奖励；奖励全零时训练 loss 仍可因 KL/辅助项变化，不能称为 RL 学会解题。
+
+## 源码精读：从不可信文字进入可信工具边界
+
+<!-- source: laptop_llm/posttraining/agent.py::parse_action -->
+
+先验证对象形状和唯一键，再验证工具白名单、参数类型与幅值。
+`type(x) is int` 避免把 Python 中继承 int 的 bool 偷渡成算术参数。
+模型不能指定文件、网络或 shell；解析函数也不执行模型文本。
+真实工具观察可进入下轮 context，但不是模型采样动作，不应有 behavior logp 或策略梯度。
+
+校准目标与 PPO min/clamp 的语义不同：
+
+<!-- source: laptop_llm/posttraining/frontier.py::calibrated_policy_loss -->
+
+ratio 和筛选系数 detach，越界动作系数置零。分母仍是原 mask 动作数量，
+不是幸存数量；因此过滤 50% 动作时，整批有效权重确实下降。
+若重新除以幸存数量，会在策略漂移时改变批次权重，得到另一目标。
+
+<!-- source: laptop_llm/posttraining/frontier.py::version_mask -->
+
+版本 mask 只是一段数学规则，不等于我们已经有异步 actor/learner 集群。
+GAR 也只能重分配已有成功信号，不能救回全部为零的组。
+
+## 可运行小实验
+
+<!-- source: scripts/lesson_examples.py::lesson_16 -->
+
+预期工具结果为 7，过滤比例为 0.5，new_logp 梯度为 `[-0.5,0]`，GAR 组均值约为 0。
+如果得到 `[-1,0]`，你很可能在过滤后重新归一化了分母。
+
+## 小结与练习
+
+1. 把工具观察也标记为动作，会错误优化哪类 token？
+2. 如果轨迹来自未来 policy version，为什么不能简单当作“更新鲜的数据”？
+
+答案提示：会优化环境反馈的概率；未来版本与当前 checkpoint 的因果/来源记录矛盾，应拒绝。

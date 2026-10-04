@@ -3,6 +3,15 @@
 前置知识：Python 函数/类、矩阵乘法、概率、链式求导，会调用 PyTorch `backward()`。
 不要求先懂 CUDA kernel 或集群。每章先学一个契约，再读实现，再跑能推翻错误实现的测试。
 
+[在线中文教材](https://daoyuanli2816.github.io/laptop-llm-cn/)提供全文搜索、章节导航和真实源码节选。
+先读[安装](../getting-started.md)与[源码阅读方法](../reading-guide.md)。
+每章都有本章问题、源码精读、CPU 小实验、小结、练习和答案提示；命令中的编号对应章节：
+
+```bash
+python scripts/lesson_examples.py 06
+python scripts/lesson_examples.py all
+```
+
 | 章节 | 主问题 | 阅读源码 | 完成标准 |
 |---|---|---|---|
 | [01 数据与预训练](01-foundations.md) | 模型到底预测什么？ | tokenizer / data / engine | 手写右移标签与 loss mask |
@@ -24,7 +33,7 @@
 | [17 低精度、投机、多模态](17-deployment.md) | 存得少、算得快、看得懂是同一件事吗？ | quantization / speculative / multimodal | nibble、拒绝修正分布与图像 label mask |
 | [18 前沿研究与行为审计](18-auditing.md) | 解释可信吗？榜单之外如何测模型？ | 论文台账 / traces / evaluation | 配对反事实、held-out harness、权限/奖励盲区审计 |
 
-## 三条路线
+## 四条路线
 
 **刚入门：** 01 → 02 → `pipeline smoke` → 09。先不要同时开 MoE 和 RL。
 
